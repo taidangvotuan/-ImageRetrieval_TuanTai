@@ -4,8 +4,9 @@ Lỗi (error) – video bị đánh dấu ``invalid``:
   missing_metadata, missing_file (sai đường dẫn), metadata_stale, unreadable,
   corrupt, duplicate_content, duplicate_id, unregistered_file, unsupported_format
 Cảnh báo (warning) – vẫn dùng được, ``--strict`` coi như lỗi:
-  too_short (< VI_MIN_VIDEO_DURATION_SEC), missing_license, probe_warning,
-  out_of_domain (category không thuộc VI_ALLOWED_CATEGORIES – mặc định chỉ video ca nhạc)
+  too_short / too_long (ngoài khoảng VI_MIN/MAX_VIDEO_DURATION_SEC, mặc định 150–330 s),
+  low_resolution (cạnh dài < VI_MIN_LONG_SIDE_PX, mặc định 1280 = 720p), missing_license,
+  probe_warning, out_of_domain (category không thuộc VI_ALLOWED_CATEGORIES – mặc định music_video)
 
 Kết quả ghi vào ``metadata/validation_report.json``; exit code 1 nếu có lỗi.
 
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from config.settings import Settings, get_settings
 from src.common.io_utils import atomic_json, read_csv, read_csv_header, write_csv
-from src.common.logging_utils import setup_logging
+from src.common.logging_utils import ensure_utf8_stdio, setup_logging
 from src.dataset.create_dataset import write_dataset_info
 from src.dataset.scan_videos import list_video_files
 from src.dataset.schema import VIDEO_COLUMNS
@@ -109,9 +110,20 @@ def validate(settings: Settings | None = None, quick: bool = False, strict: bool
                 add("error", code, "; ".join(probe.errors), vid, name)
             for warning in probe.warnings:
                 add("warning", "probe_warning", warning, vid, name)
-        if _positive(r.get("duration_seconds")) and float(r["duration_seconds"]) < settings.min_video_duration_sec:
-            add("warning", "too_short",
-                f"{float(r['duration_seconds']) / 60:.1f} phút < {settings.min_video_duration_sec / 60:g} phút", vid, name)
+        if _positive(r.get("duration_seconds")):
+            duration = float(r["duration_seconds"])
+            if duration < settings.min_video_duration_sec:
+                add("warning", "too_short",
+                    f"{duration:.0f} s < {settings.min_video_duration_sec:g} s (MV cần 3–5 phút)", vid, name)
+            elif settings.max_video_duration_sec and duration > settings.max_video_duration_sec:
+                add("warning", "too_long",
+                    f"{duration:.0f} s > {settings.max_video_duration_sec:g} s (MV cần 3–5 phút)", vid, name)
+        if _positive(r.get("width")) and _positive(r.get("height")):
+            long_side = max(int(float(r["width"])), int(float(r["height"])))
+            if long_side < settings.min_long_side_px:
+                add("warning", "low_resolution",
+                    f"{r['width']}x{r['height']}: cạnh dài {long_side} < {settings.min_long_side_px} px (cần ≥ 720p)",
+                    vid, name)
         if not r.get("license"):
             add("warning", "missing_license", "chưa khai báo giấy phép (scan_videos --register-source)", vid, name)
         if settings.allowed_categories:
@@ -168,6 +180,7 @@ def validate(settings: Settings | None = None, quick: bool = False, strict: bool
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Kiểm tra tính hợp lệ của Dataset")
     parser.add_argument("--dataset-dir", type=Path)
     parser.add_argument("--quick", action="store_true", help="Không giải mã thử frame")

@@ -2,40 +2,48 @@
 
 Đồ án môn **Phát triển ứng dụng trên nền tảng dữ liệu lớn**.
 
-Hệ thống cho phép tìm một đối tượng mà mô hình YOLO hỗ trợ (ví dụ `person`, `microphone`,
-`guitar`, …) trong một tập **video ca nhạc**. Kết quả trả về gồm: video nào có đối tượng, thời
-điểm bắt đầu và kết thúc mỗi lần xuất hiện, tổng thời lượng, độ tin cậy, và phát lại video tại
-thời điểm tìm được.
+Người dùng nhập tên một lớp đối tượng (ví dụ `person`, `car`, `chair`). Hệ thống phân tích một
+Dataset **Music Video (MV) 3–5 phút** và trả về: đối tượng có trong MV nào, xuất hiện trong những
+khoảng thời gian nào, bao nhiêu lần, và cho phép phát MV tại thời điểm tìm thấy.
 
-**Phạm vi dữ liệu:** chỉ video ca nhạc, ưu tiên show **Anh Trai Vượt Ngàn Chông Gai**, các MV và
-concert khác vẫn được. Danh sách lớp đối tượng cụ thể sẽ do mô hình chọn ở Giai đoạn 4 quyết định
-(xem [PROJECT_ANALYSIS.md §11.3](PROJECT_ANALYSIS.md)), vì 80 lớp COCO không có micro hay nhạc cụ.
+Ví dụ minh họa định dạng đầu ra (**không phải kết quả đo được**):
 
-| Video | Bắt đầu | Kết thúc |
-|---|---|---|
-| video_001 | 00:01:15 | 00:01:42 |
-| video_001 | 00:05:20 | 00:05:48 |
+```text
+MV_001 – <tiêu đề>        Thời lượng 04:15
+  Lần 1: 00:12 – 00:38
+  Lần 2: 01:25 – 01:57
+```
 
-> Bảng trên chỉ minh họa định dạng đầu ra, không phải kết quả đo được.
+Timestamp được ước lượng từ frame lấy mẫu (1 hoặc 2 frame/giây), nên biên mỗi khoảng có sai số
+tối đa bằng chu kỳ lấy mẫu. Bài toán nhận diện **lớp** đối tượng, không nhận diện danh tính
+người (ca sĩ, diễn viên).
+
+**Lớp mục tiêu** (đều thuộc 80 lớp COCO của YOLO): person, car, motorcycle, bus, bicycle, dog,
+cat, chair, bottle, backpack. Các lớp COCO khác vẫn truy vấn được. Lớp mà mô hình không hỗ trợ
+sẽ được báo rõ.
 
 ## Tiến độ
 
 | Giai đoạn | Nội dung | Trạng thái |
 |---|---|---|
-| 1 | Phân tích project, môi trường ([PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md)) | ✅ Hoàn thành |
-| 2 | Dataset: cấu trúc, quét, kiểm tra, tải video CC BY, báo cáo | ✅ Hoàn thành |
-| 3 | Video processing: đọc theo luồng, lấy mẫu frame, timestamp theo PTS | ⏳ Chưa làm |
-| 4 | Nhận diện đối tượng bằng YOLO (nano, CPU) → Parquet | ⏳ |
-| 5 | Spark + HDFS: gom temporal segments, Spark SQL, benchmark | ⏳ |
-| 6 | Kafka + Spark Structured Streaming | ⏳ |
+| 1 | Audit project ([PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) §12) | ✅ |
+| 2 | Dataset MV: cấu trúc, metadata, kiểm tra, thống kê, công cụ tìm/tải CC BY | ✅ công cụ · ⏳ **chưa có MV nào** |
+| 3 | Video processing: lấy mẫu 1/2 fps, timestamp theo PTS, checkpoint | ⏳ |
+| 4 | YOLO nano (CPU) → detection Parquet; temporal segment bản pandas | ⏳ |
+| 5 | Spark batch + Spark SQL, Parquet/HDFS, benchmark Python vs PySpark | ⏳ |
+| 6 | Kafka + Spark Structured Streaming (Docker) | ⏳ |
 | 7 | Giao diện Streamlit | ⏳ |
-| 8 | Kiểm thử tích hợp, benchmark, tài liệu triển khai | ⏳ |
+| 8 | Kiểm thử, đánh giá với ground truth gán tay, tài liệu | ⏳ |
 
-Kiến trúc mục tiêu:
+Kiến trúc mục tiêu (chi tiết trong PROJECT_ANALYSIS.md §12):
 
 ```text
-Video → kiểm tra → metadata → lấy mẫu frame → YOLO → detection events
-      → Kafka / Parquet → Spark → temporal segments → Parquet / HDFS → truy vấn → Streamlit
+LUỒNG 1 – BATCH (MV đã lưu)
+  raw/videos → scan/validate → lấy mẫu frame (PTS) → YOLO nano → detections.parquet
+             → Spark (Window/SQL) → temporal_segments.parquet → HDFS
+LUỒNG 2 – STREAMING (sự kiện detection, phát lại từ MV đã lưu – không phải video thời gian thực)
+  producer → Kafka `vi.detections` → Spark Structured Streaming (checkpoint, khử trùng) → Parquet/HDFS
+Streamlit ← đọc Parquet kết quả
 ```
 
 ## Cấu trúc thư mục
@@ -44,19 +52,20 @@ Video → kiểm tra → metadata → lấy mẫu frame → YOLO → detection e
 VideoRetrieval-TuanTai/
 ├── config/
 │   ├── settings.py             # cấu hình tập trung (biến VI_* trong .env)
-│   └── music_presets.json      # preset tải video ca nhạc (atvncg, concert, music_video)
+│   └── music_presets.json      # preset tìm MV CC BY + từ khóa loại trừ
 ├── src/
 │   ├── common/                 # ghi file atomic, sha256, CSV, logging
 │   ├── dataset/                # công cụ quản lý Dataset (giai đoạn 2)
 │   │   ├── create_dataset.py   # khởi tạo cấu trúc
-│   │   ├── scan_videos.py      # quét video, đo metadata, khai báo nguồn
-│   │   ├── validate_dataset.py # kiểm tra lỗi, trùng lặp, thời lượng, giấy phép
-│   │   ├── download_videos.py  # tải video YouTube giấy phép CC BY (yt-dlp)
-│   │   ├── dataset_report.py   # thống kê tổng quan
-│   │   └── schema.py           # cột metadata, 80 lớp COCO
+│   │   ├── scan_videos.py      # quét MV, đo metadata, khai báo nguồn, gỡ video
+│   │   ├── validate_dataset.py # lỗi, trùng lặp, thời lượng, độ phân giải, giấy phép
+│   │   ├── download_videos.py  # tìm/tải MV YouTube giấy phép CC BY (yt-dlp)
+│   │   ├── dataset_report.py   # thống kê + tiến độ theo mốc 5/10/30/50
+│   │   └── schema.py           # cột metadata, 80 lớp COCO, 10 lớp mục tiêu
 │   └── video_processing/
 │       └── video_probe.py      # metadata + đọc thử video (OpenCV + FFmpeg)
 ├── dataset/                    # DỮ LIỆU – xem dataset/README.md
+├── archive/                    # video đã gỡ khỏi dataset (gitignore) + archive_manifest.csv
 ├── tests/                      # pytest
 ├── legacy/                     # project ImageRetrieval cũ (giữ để tham khảo)
 ├── requirements.txt / requirements-dev.txt
@@ -64,9 +73,8 @@ VideoRetrieval-TuanTai/
 └── PROJECT_ANALYSIS.md
 ```
 
-Các thư mục `app/`, `src/object_detection/`, `src/big_data/`, `src/streaming/`, `src/storage/`,
-`src/query/`, `scripts/`, `docker/` sẽ được tạo ở giai đoạn tương ứng. Tôi không tạo module rỗng
-trước.
+Các thư mục `app/`, `src/detection/`, `src/big_data/`, `src/streaming/`, `src/storage/`,
+`scripts/`, `docker/` sẽ được tạo ở giai đoạn tương ứng, không tạo module rỗng trước.
 
 ## 1. Cài đặt
 
@@ -83,107 +91,103 @@ Copy-Item .env.example .env      # tùy chọn, các giá trị mặc định đ
 
 Mọi lệnh bên dưới chạy **từ thư mục gốc repo** với `.venv-vi` đã kích hoạt.
 
-> Dùng `.venv-vi` (Python 3.11) thay cho Python 3.14 mặc định của máy, vì torch và ultralytics
-> ở các giai đoạn sau cần phiên bản đã có wheel ổn định. `.venv` cũ chỉ dùng cho `legacy/`.
+> `python` mặc định trên máy là 3.14. Luôn kích hoạt `.venv-vi` (Python 3.11) trước khi chạy,
+> vì torch, ultralytics và PySpark ở các giai đoạn sau cần phiên bản đã có wheel ổn định.
 
-## 2. Dataset
+## 2. Dataset Music Video
 
-Chi tiết cấu trúc và các trường metadata nằm trong [dataset/README.md](dataset/README.md).
+| Tiêu chí | Yêu cầu | Cấu hình |
+|---|---|---|
+| Loại | Chỉ Music Video | `VI_ALLOWED_CATEGORIES=music_video` |
+| Định dạng | MP4 | |
+| Thời lượng | 3–5 phút, công cụ chấp nhận 150–330 s | `VI_MIN/MAX_VIDEO_DURATION_SEC` |
+| Độ phân giải | 720p hoặc 1080p (cạnh dài ≥ 1280 px) | `VI_MIN_LONG_SIDE_PX` |
+| Quy mô | 5 → 10 → 30 (chính) → 50 (mở rộng) | `VI_TARGET_MILESTONES` |
+| Lấy mẫu | 1 frame/giây, thử nghiệm 2 frame/giây | (giai đoạn 3) |
+| `video_id` | `MV_001`, `MV_002`, … gán một lần; file giữ tên gốc `yt_<id>.mp4` | `VI_VIDEO_ID_PREFIX` |
 
-**Yêu cầu:**
-- Chỉ video ca nhạc. Mỗi video có `category` thuộc `music_show` (show truyền hình, ví dụ ATVNCG),
-  `music_video` hoặc `concert`, cấu hình qua `VI_ALLOWED_CATEGORIES`.
-- Mỗi video dài ≥ 10 phút (mục tiêu 10–30 phút), 10–20 video, tổng 2–5 giờ.
-- Không dùng video giả, không lặp video ngắn.
-- Mỗi video phải ghi rõ nguồn, kênh đăng và giấy phép.
+Ngoài khoảng thời lượng → `too_short` / `too_long`. Dưới 720p → `low_resolution`. Đây là cảnh báo,
+thành lỗi khi `validate_dataset --strict`. Ước tính với 30 MV × 4 phút: khoảng 7.200 frame @1 fps
+và 14.400 frame @2 fps. Đây là **ước tính**, số frame thật được thống kê sau khi trích xuất.
 
-MV đơn lẻ thường chỉ dài 3–5 phút nên bị loại. Với thể loại `music_video`, nên dùng live session
-hoặc bản tổng hợp dài ≥ 10 phút.
+Không dùng video giả, không lặp video ngắn, không tạo metadata giả. Số MV trong báo cáo luôn là
+số thật đếm từ `metadata/videos.csv`.
 
-### 2.1. Khởi tạo (làm được cả khi chưa có video)
+### 2.1. Khởi tạo (làm được khi chưa có video)
 
 ```powershell
 python -m src.dataset.create_dataset
 ```
 
-Lệnh này tạo cây thư mục `raw/`, `metadata/`, `processed/`, `annotations/`, `splits/`, file
-`dataset/README.md`, các CSV chỉ có header (không chứa dòng giả), `labels.csv` (80 lớp COCO) và
-`dataset_info.json`. Chạy lại nhiều lần không ghi đè dữ liệu có sẵn.
+### 2.2. Đưa MV vào
 
-### 2.2. Đưa video vào
-
-**Cách 1: tải video YouTube có giấy phép Creative Commons Attribution (CC BY)**
+**Cách 1: tìm MV YouTube giấy phép CC BY, duyệt tay rồi mới tải.**
 
 ```powershell
-# Ưu tiên: Anh Trai Vượt Ngàn Chông Gai. Xem trước, không tải
-python -m src.dataset.download_videos --preset atvncg --max-results 20 --dry-run
-# Tải video đã chọn (preset vẫn kiểm tra kênh chính chủ và tiêu đề)
-python -m src.dataset.download_videos --preset atvncg --url "https://www.youtube.com/watch?v=VIDEO_ID"
-# Hoặc tự động tải N video đầu tiên đạt yêu cầu
-python -m src.dataset.download_videos --preset atvncg --limit 5
-
-# Concert / MV khác
-python -m src.dataset.download_videos --preset concert --max-results 10 --dry-run
-python -m src.dataset.download_videos --category concert --url "https://www.youtube.com/watch?v=VIDEO_ID"
+# 1) Chỉ tìm, KHÔNG tải. Kết quả ghi vào dataset/metadata/download_candidates.csv
+python -m src.dataset.download_videos --preset music_video --max-results 30 --dry-run
+# 2) Mở download_candidates.csv. Với mỗi dòng accepted=yes, kiểm tra:
+#    - kênh có phải của nghệ sĩ / hãng phát hành không (không phải kênh reup)?
+#    - có đúng là MV (có hình quay) không, không phải lyric/audio?
+#    Chép URL đã duyệt vào approved_urls.txt, mỗi dòng một URL.
+# 3) Tải các URL đã duyệt
+python -m src.dataset.download_videos --url-file approved_urls.txt
 ```
-
-Preset nằm trong [config/music_presets.json](config/music_presets.json). Preset `atvncg`:
-- chỉ nhận video từ kênh **YeaH1 Channel** (đơn vị sản xuất chương trình);
-- tiêu đề phải chứa "anh trai vượt ngàn chông gai", so khớp không dấu. Nhờ vậy các show khác cùng
-  kênh như "Gia Đình Haha" bị loại.
-
-Lý do lọc theo kênh: giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung, nên video do
-kênh khác đăng lại sẽ bị từ chối. Có thể thêm kênh tin cậy bằng `--trusted-channel CHANNEL_ID` và
-từ khóa bằng `--title-keyword`.
 
 Quy tắc của công cụ:
 
-- Đọc metadata trước khi tải. Video chỉ được tải khi trường `license` là **CC BY thuần**.
-  Giấy phép NC/SA/ND, "Standard YouTube License" hoặc thiếu thông tin đều bị **từ chối**.
-- Từ chối video ngắn hơn `VI_MIN_VIDEO_DURATION_SEC` (mặc định 10 phút) và video đang livestream.
-- `--search` dùng bộ lọc Creative Commons của YouTube, kết hợp bộ lọc độ dài qua `--length`:
-  `long` > 20 phút (mặc định), `medium` 4–20 phút, `any`. Giấy phép vẫn được kiểm tra lại cho
-  từng video.
-- Video được tải ở độ phân giải tối đa 720p (`--max-height`), ưu tiên H.264 để trình duyệt phát
-  được, lưu với tên `raw/videos/yt_<id>.mp4`.
-- URL, tiêu đề, kênh (`channel_id`), giấy phép, `category` và `series` được ghi vào
-  `metadata/sources.csv`. CC BY yêu cầu ghi công tác giả khi sử dụng.
-- Bài hát trong video còn có quyền tác giả âm nhạc riêng. Chỉ dùng cho phân tích học thuật,
-  **không phân phối lại file video**.
-- File `metadata/download_archive.txt` giúp chạy lại không tải trùng, và tiếp tục được khi bị ngắt.
+- Đọc metadata trước khi tải. Chỉ tải khi `license` là **CC BY thuần**. NC/SA/ND,
+  "Standard YouTube License" hoặc thiếu thông tin đều bị **từ chối**. Video công khai trên YouTube
+  không mặc định được phép tải.
+- Chỉ nhận video dài 150–330 s và không đang livestream.
+- Loại tiêu đề chứa từ khóa như lyric, audio, visualizer, 1 hour, loop, slowed, karaoke, teaser…
+  (`exclude_keywords` trong preset; thêm bằng `--exclude-keyword`). So khớp theo từ, không dấu.
+- Giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung. Công cụ không tự xác minh được
+  điều này, nên **bước duyệt tay là bắt buộc**. Có thể giới hạn kênh bằng `--trusted-channel ID`.
+- Tải tối đa 720p (`--max-height 1080` nếu cần), ưu tiên H.264 để trình duyệt/Streamlit phát được.
+  File lưu thành `raw/videos/yt_<id>.mp4`.
+- URL, tiêu đề, kênh, `channel_id` và giấy phép được ghi vào `metadata/sources.csv`. CC BY yêu
+  cầu ghi công tác giả khi sử dụng.
+- Bài hát còn có quyền tác giả âm nhạc riêng: chỉ dùng cho phân tích học thuật, **không phân phối
+  lại file video** (video bị `.gitignore`, chỉ commit metadata).
+- `metadata/download_archive.txt` giúp chạy lại không tải trùng và tiếp tục được khi bị ngắt.
 
-**Cách 2: video tự cung cấp.** Chép file vào `dataset/raw/videos/`, rồi khai báo nguồn bằng lệnh
-(không cần sửa CSV bằng tay):
-
-```powershell
-python -m src.dataset.scan_videos --register-source my_video.mp4 --source user `
-    --license "..." --category concert --series "..." --title "..."
-```
-
-**Gỡ video khỏi dataset** (ví dụ video ngoài domain):
+**Cách 2: MV tự cung cấp hoặc được cấp phép.** Chép file vào `dataset/raw/videos/`, rồi khai báo
+nguồn (không cần sửa CSV bằng tay):
 
 ```powershell
-python -m src.dataset.scan_videos --remove video_005                # file chuyển vào raw/removed/
-python -m src.dataset.scan_videos --remove video_005 --delete-file  # xóa hẳn file
+python -m src.dataset.scan_videos --register-source my_mv.mp4 --source user `
+    --license "..." --category music_video --title "..." --author "..." --source-url "..."
 ```
+
+**Gỡ video khỏi dataset:**
+
+```powershell
+python -m src.dataset.scan_videos --remove MV_005 --reason "reup, không phải kênh chính chủ"
+python -m src.dataset.scan_videos --remove MV_005 --delete-file   # xóa hẳn file
+```
+
+File được chuyển vào `archive/videos/` (ngoài `dataset/`), không bao giờ ghi đè file đã có.
+Metadata, nguồn và giấy phép được ghi lại trong `archive/archive_manifest.csv` để truy vết.
 
 ### 2.3. Quét, kiểm tra, báo cáo
 
 ```powershell
-python -m src.dataset.scan_videos         # đo metadata, sha256, gán video_id, chia split
+python -m src.dataset.scan_videos         # đo metadata, sha256, gán video_id MV_xxx, chia split
 python -m src.dataset.validate_dataset    # exit code 1 nếu có lỗi
-python -m src.dataset.dataset_report      # in thống kê + ghi metadata/dataset_report.md
+python -m src.dataset.dataset_report      # thống kê + tiến độ mốc -> metadata/dataset_report.md
 ```
 
-`scan_videos` hoạt động như sau:
+`scan_videos`:
 
 - Chạy tăng dần: file không đổi (cùng dung lượng và mtime) thì không băm lại.
 - `videos.csv` được ghi sau mỗi video, nên có thể tiếp tục khi bị ngắt.
-- `video_id` (`video_001`, …) được gán một lần và không đổi.
-- Split train/validation/test (70/15/15): video được xếp theo hash `video_id` rồi cắt theo tỷ lệ.
-  Kết quả cố định giữa các lần chạy, và validation/test luôn có ít nhất 1 video khi có ≥ 3 video.
+- `video_id` được gán một lần và không đổi.
+- Split train/validation/test (70/15/15) theo hash `video_id`, cố định giữa các lần chạy. Đề tài
+  không train mô hình: `validation` dùng để chỉnh `gap_tolerance`/`confidence`, `test` dùng để gán
+  nhãn ground truth và đánh giá.
 
-`validate_dataset` phát hiện các trường hợp sau:
+`validate_dataset` phát hiện:
 
 | Mã | Mức | Ý nghĩa |
 |---|---|---|
@@ -194,43 +198,31 @@ python -m src.dataset.dataset_report      # in thống kê + ghi metadata/datase
 | `missing_metadata` / `missing_metadata_columns` | lỗi | Thiếu trường hoặc giá trị không hợp lệ (FPS = 0, …) |
 | `unregistered_file` | lỗi | Video có trên đĩa nhưng chưa có metadata |
 | `metadata_stale` | lỗi | File đã thay đổi so với metadata, cần chạy lại scan |
-| `too_short` | cảnh báo | Ngắn hơn ngưỡng thời lượng |
+| `too_short` / `too_long` | cảnh báo | Ngoài khoảng 150–330 s |
+| `low_resolution` | cảnh báo | Dưới 720p (cạnh dài < 1280 px) |
 | `missing_license` | cảnh báo | Chưa khai báo giấy phép |
-| `out_of_domain` | cảnh báo | `category` không phải video ca nhạc (hoặc chưa khai báo) |
+| `out_of_domain` | cảnh báo | `category` không phải `music_video` (hoặc chưa khai báo) |
 | `probe_warning` | cảnh báo | Thời lượng OpenCV lệch container (có thể là VFR) |
 
-`--strict` coi cảnh báo là lỗi. `--quick` bỏ bước giải mã thử frame. Video có lỗi được chuyển
-`processing_status = invalid`, còn lại được chuyển thành `validated`.
+`--strict` coi cảnh báo là lỗi. `--quick` bỏ bước giải mã thử frame.
 
-### 2.4. Hiện trạng Dataset
+### 2.4. Hiện trạng Dataset (2026-11-24)
 
-Đã đạt mục tiêu tối thiểu: **10 video, 5,38 giờ** (05:22:30), dung lượng 3,1 GB. Tất cả đều có
-giấy phép CC BY và đạt `validate_dataset --strict` (0 lỗi, 0 cảnh báo). Thành phần: 8 video
-`music_show` – Anh Trai Vượt Ngàn Chông Gai (kênh YeaH1) và 2 video `concert`.
-Split train/validation/test là 6/2/2.
+**Dataset có 0 MV. Chưa đạt mốc nào** (mốc đầu tiên là 5 MV).
 
-| video_id | Tiêu đề (kênh) | Thời lượng | Độ phân giải | FPS | Thể loại |
-|---|---|---|---|---|---|
-| video_001 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc tập luyện Đào Liễu](https://www.youtube.com/watch?v=7cM6_ZONDGM) (YeaH1 Channel) | 00:24:12 | 1280×720 | 29.97 | music_show |
-| video_002 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Khoảnh khắc tập luyện siêu ồn của Nhà Hát và cái kết](https://www.youtube.com/watch?v=adToS1DJd74) (YeaH1 Channel) | 00:25:41 | 1280×720 | 29.97 | music_show |
-| video_003 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc tập luyện Dạ Cổ của Nhà Mứt Gừng](https://www.youtube.com/watch?v=e20m2bjeh1U) (YeaH1 Channel) | 00:23:31 | 1280×720 | 29.97 | music_show |
-| video_004 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc tập luyện Chiếc Khắn Piêu của Nhà Cá Lớn](https://www.youtube.com/watch?v=ektRXdwR_vI) (YeaH1 Channel) | 00:23:55 | 1280×720 | 29.97 | music_show |
-| video_005 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Nhìn lại các màn tập luyện cực nhiệt huyết của các Anh Tài](https://www.youtube.com/watch?v=tjqs7-iQ7Ko) (YeaH1 Channel) | 00:28:08 | 1280×720 | 29.97 | music_show |
-| video_006 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc cực căng tại vòng song ca ở Công Diễn 4](https://www.youtube.com/watch?v=W6vvT3sfkzA) (YeaH1 Channel) | 00:43:50 | 1280×720 | 29.97 | music_show |
-| video_007 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Đằng sau tiết mục cực cháy của Nhà Ngũ Hành là cái giá cần phải trả](https://www.youtube.com/watch?v=WAg2mTtHbYE) (YeaH1 Channel) | 00:31:07 | 1280×720 | 29.97 | music_show |
-| video_008 | [[FULL FOCUS CAM] NHÀ TRẺ - TỔNG HỢP TIẾT MỤC CÔNG DIỄN 4 I ANH TRAI VƯỢT NGÀN CHÔNG GAI 2024](https://www.youtube.com/watch?v=X1V-tMufAPA) (YeaH1 Channel) | 00:28:27 | 360×640 | 30.00 | music_show |
-| video_009 | [Ausomapto live [Full concert]](https://www.youtube.com/watch?v=HMhyzt0xoGs) (Ausomapto) | 00:43:39 | 1280×720 | 29.97 | concert |
-| video_010 | [Liveshow Hà Nội và em khi thu chớm đông sang (P1) - Phú Quang](https://www.youtube.com/watch?v=nFl49167ac4) (Phú Quang) | 00:49:59 | 854×480 | 25.00 | concert |
+10 video thu thập theo định hướng cũ (8 video tổng hợp *Anh Trai Vượt Ngàn Chông Gai* và 2 concert,
+dài 23–50 phút) **không đạt tiêu chí MV 3–5 phút**. Cả 10 đã được gỡ khỏi dataset và chuyển vào
+`archive/videos/`, cùng một video walking tour gỡ trước đó. Nguồn và giấy phép của chúng được giữ
+trong `archive/archive_manifest.csv`. Các video này không được dùng trong bất kỳ số liệu nào của
+đề tài MV.
 
-Ghi chú:
-- `video_008` là video quay dọc (focus cam, 360×640).
-- Hai video concert được chọn vì tên kênh trùng với nghệ sĩ. Quyền sở hữu chưa được xác minh độc lập.
-- Video walking tour tải ở lần thử trước nằm ngoài domain ca nhạc, đã được gỡ và chuyển vào
-  `dataset/raw/removed/`. Có thể xóa hẳn thư mục này.
+Tình trạng mới nhất nằm trong `dataset/metadata/dataset_report.md`.
 
-Tình trạng mới nhất nằm trong `dataset/metadata/dataset_report.md`. File video không được commit
-(`.gitignore`), chỉ metadata được commit. Muốn khôi phục video, chạy lại `download_videos --url` với
-URL trong `sources.csv`.
+### 2.5. Ground truth
+
+Quy trình gán nhãn tay nằm trong
+[dataset/annotations/annotation_guide.md](dataset/annotations/annotation_guide.md). Nhãn **không
+bao giờ** được sinh từ kết quả YOLO.
 
 ## 3. Kiểm thử
 
@@ -238,29 +230,13 @@ URL trong `sources.csv`.
 python -m pytest
 ```
 
-Có 39 test, không cần mạng và không cần video thật. Video vài giây dùng trong test được sinh tạm
-bằng OpenCV trong thư mục tạm của pytest, **không** ghi vào `dataset/` và không dùng để báo cáo
-kết quả. Phạm vi test:
-
-- Dataset rỗng.
-- Video hợp lệ và metadata.
-- Video quá ngắn (cảnh báo, thành lỗi khi `--strict`).
-- File hỏng, file rỗng, file bị cắt cụt.
-- Trùng lặp.
-- Sai đường dẫn.
-- Video chưa đăng ký.
-- Thiếu trường hoặc cột metadata.
-- Metadata cũ.
-- Quét tăng dần.
-- Khai báo nguồn.
-- Split.
-- Báo cáo.
-- Phân loại giấy phép (CC BY, NC, SA, Standard).
-- Kênh chính chủ và từ khóa tiêu đề không dấu (preset `atvncg`).
-- Domain ca nhạc (`out_of_domain`).
-- Gỡ video.
-- Dry-run.
-- Lỗi mạng khi đọc metadata.
+Có 54 test, không cần mạng và không cần video thật. Video vài giây dùng trong test được sinh tạm
+bằng OpenCV trong thư mục tạm của pytest, **không** ghi vào `dataset/` hay `archive/` và không dùng
+để báo cáo kết quả. Phạm vi: dataset rỗng, metadata, quá ngắn/quá dài, độ phân giải thấp, file hỏng
+/rỗng/cắt cụt, trùng lặp, sai đường dẫn, chưa đăng ký, thiếu trường/cột, metadata cũ, quét tăng dần,
+khai báo nguồn, split, báo cáo và mốc, CLI khi output bị chuyển hướng, domain MV, gỡ video vào archive (không ghi đè), phân loại giấy
+phép, khoảng thời lượng khi tải, từ khóa loại trừ, kênh tin cậy, dry-run ghi danh sách ứng viên, lỗi
+mạng.
 
 ## 4. Môi trường đã kiểm tra
 
@@ -268,19 +244,19 @@ kết quả. Phạm vi test:
 |---|---|---|
 | Python (`.venv-vi`) | 3.11.9 | tất cả |
 | OpenCV (headless) | 5.1.0 | 2–4 |
-| FFmpeg (imageio-ffmpeg) | 9.0.2 | 2–3 |
+| FFmpeg (imageio-ffmpeg) | 9.0.2, không kèm `ffprobe` | 2–3 |
 | yt-dlp | 2026.10.26 | 2 |
 | Java | 17.0.20.1 | 5–6 |
-| Apache Spark | 4.2.0 (`SPARK_HOME`), đã chạy thử Parquet | 5–6 |
-| Apache Hadoop | 3.4.0 (`HADOOP_HOME`, có winutils) | 5 |
-| Apache Kafka | 4.3.1 (KRaft) | 6 |
-| Docker | 29.9.3 (dự phòng cho HDFS/Kafka) | 5–6 |
+| Apache Spark | 4.2.0 (`SPARK_HOME`), chưa có jar `spark-sql-kafka` | 5–6 |
+| Docker | 29.9.3, **phương án chính** cho Kafka và HDFS (cần bật Docker Desktop) | 5–6 |
+| Apache Hadoop | 3.4.0 native (`HADOOP_HOME`, có winutils), dự phòng | 5 |
+| Apache Kafka | 4.3.1 native (KRaft), dự phòng | 6 |
 
 Rủi ro và kế hoạch chi tiết xem trong [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md).
 
 ## 5. Legacy
 
 Project ImageRetrieval cũ (truy vấn ảnh Castle5000: Qwen3-VL, GroundingDINO, SAM2, FastAPI,
-React) đã được chuyển nguyên vẹn vào [legacy/](legacy/). Lịch sử git vẫn được giữ, và 32 test cũ
-vẫn đạt sau khi di chuyển. Xem [legacy/README.md](legacy/README.md). File `.env` cũ, chứa token
-Kaggle, nằm tại `legacy/.env` và không được commit.
+React) đã được chuyển nguyên vẹn vào [legacy/](legacy/). Lịch sử git vẫn được giữ. Xem
+[legacy/README.md](legacy/README.md). File `.env` cũ, chứa token Kaggle, nằm tại `legacy/.env` và
+không được commit.

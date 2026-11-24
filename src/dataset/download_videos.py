@@ -1,22 +1,24 @@
-"""Tải video ca nhạc có giấy phép **Creative Commons Attribution (CC BY)** bằng yt-dlp.
+"""Tìm và tải **Music Video** có giấy phép **Creative Commons Attribution (CC BY)** bằng yt-dlp.
 
 Quy tắc an toàn pháp lý:
-* Luôn đọc metadata (``extract_info(download=False)``) TRƯỚC khi tải và chỉ tải
-  khi trường ``license`` là CC BY thuần. "Standard YouTube License", không có thông
-  tin giấy phép hoặc CC NC/SA/ND đều bị TỪ CHỐI.
-* Giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung -> với chương trình
-  có chủ sở hữu rõ ràng (preset ``atvncg``), chỉ nhận video từ kênh chính chủ
-  (``trusted_channels``) để loại kênh reup gắn CC BY sai.
-* Video ngắn hơn ``VI_MIN_VIDEO_DURATION_SEC`` bị từ chối (đề tài cần video dài).
-* Domain ca nhạc: mỗi video được gán ``category`` (music_show / music_video / concert)
-  và ``series``; có thể bắt buộc tiêu đề chứa từ khóa (so khớp không dấu).
-* Nguồn, kênh, tác giả, URL, giấy phép ghi vào ``metadata/sources.csv`` để trích dẫn.
+* Luôn đọc metadata (``extract_info(download=False)``) TRƯỚC khi tải, và chỉ tải
+  khi trường ``license`` là CC BY thuần. "Standard YouTube License", thiếu thông tin
+  giấy phép, hoặc CC NC/SA/ND đều bị TỪ CHỐI. Video công khai trên YouTube KHÔNG mặc
+  định được phép tải.
+* Giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung. Công cụ không tự xác
+  minh được điều đó, nên quy trình là: ``--dry-run`` -> ghi danh sách ứng viên ra
+  ``metadata/download_candidates.csv`` -> **người dùng duyệt từng video** (kênh có phải
+  của nghệ sĩ/hãng không) -> tải bằng ``--url`` / ``--url-file``. Có thể giới hạn kênh
+  bằng ``--trusted-channel``.
+* Chỉ nhận MV dài trong khoảng ``VI_MIN/MAX_VIDEO_DURATION_SEC`` (mặc định 150–330 s).
+* Loại tiêu đề kiểu lyric / audio / visualizer / bản lặp 1 giờ… (``exclude_keywords``),
+  vì những video này không phải MV hoặc chỉ có ảnh tĩnh.
+* Nguồn, kênh, tác giả, URL, giấy phép ghi vào ``metadata/sources.csv`` để ghi công
+  (CC BY bắt buộc ghi công tác giả).
 
-    # Ưu tiên: Anh Trai Vượt Ngàn Chông Gai (kênh chính chủ YeaH1)
-    python -m src.dataset.download_videos --preset atvncg --max-results 15 --dry-run
-    python -m src.dataset.download_videos --preset atvncg --limit 8
-    # Video ca nhạc khác
-    python -m src.dataset.download_videos --url URL --category concert
+    python -m src.dataset.download_videos --preset music_video --max-results 30 --dry-run
+    python -m src.dataset.download_videos --url-file my_approved_urls.txt
+    python -m src.dataset.download_videos --url https://www.youtube.com/watch?v=XXXXXXXXXXX
 """
 from __future__ import annotations
 
@@ -31,7 +33,8 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from config.settings import PROJECT_ROOT, Settings, get_settings
-from src.common.logging_utils import setup_logging
+from src.common.io_utils import write_csv
+from src.common.logging_utils import ensure_utf8_stdio, setup_logging
 from src.dataset.create_dataset import create_dataset
 from src.dataset.scan_videos import register_source, scan
 
@@ -41,12 +44,13 @@ PRESETS_FILE = PROJECT_ROOT / "config" / "music_presets.json"
 
 # Tham số ``sp`` (protobuf base64) của trang tìm kiếm YouTube: bộ lọc Creative Commons,
 # có thể kết hợp bộ lọc độ dài. Chỉ để thu hẹp kết quả – giấy phép/thời lượng vẫn được
-# kiểm tra lại cho từng video.
+# kiểm tra lại cho từng video. MV 3–5 phút nằm vắt qua mốc 4 phút của bộ lọc "medium"
+# (4–20 phút), nên mặc định dùng "any" rồi lọc thời lượng trong code.
 YOUTUBE_SEARCH = "https://www.youtube.com/results?search_query={query}&sp={sp}"
 SEARCH_FILTERS = {
     "any": "EgIwAQ%253D%253D",      # CC
+    "short": "EgQYATAB",            # CC + < 4 phút
     "medium": "EgQYAzAB",           # CC + 4–20 phút
-    "long": "EgQYAjAB",             # CC + > 20 phút
 }
 CC_BY_LICENSE_URL = "https://creativecommons.org/licenses/by/3.0/"  # YouTube dùng CC BY 3.0
 
@@ -54,14 +58,19 @@ _CC_BY_TEXT = re.compile(r"creative\s+commons\s+attribution(?!\s*[-‐–]?\s*(n
 _CC_BY_URL = re.compile(r"creativecommons\.org/licenses/by/\d", re.I)
 _NON_BY = re.compile(r"non\s*-?commercial|share\s*-?alike|no\s*-?deriv|by-nc|by-sa|by-nd", re.I)
 
+CANDIDATE_COLUMNS = ["accepted", "reason", "url", "title", "uploader", "channel_id", "duration",
+                     "license_raw", "checked_at"]
+
 
 @dataclass
 class Rules:
     min_duration: float
+    max_duration: float | None = None
     category: str = "music_video"
     series: str = ""
-    trusted_channels: dict[str, str] = field(default_factory=dict)  # channel_id -> mô tả
-    title_keywords: list[str] = field(default_factory=list)          # cần khớp ít nhất 1
+    trusted_channels: dict[str, str] = field(default_factory=dict)  # channel_id -> mô tả; rỗng = mọi kênh
+    title_keywords: list[str] = field(default_factory=list)          # nếu có: cần khớp ít nhất 1
+    exclude_keywords: list[str] = field(default_factory=list)        # khớp bất kỳ -> từ chối
 
 
 @dataclass
@@ -84,6 +93,11 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _contains_word(text: str, keyword: str) -> bool:
+    """So khớp theo ranh giới từ (không dấu): 'audio' không khớp 'audiovisual'."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(normalize(keyword))}(?![a-z0-9])", normalize(text)) is not None
+
+
 def classify_license(license_text: str | None) -> tuple[bool, str]:
     """Chỉ chấp nhận CC BY thuần (không NC/SA/ND)."""
     if not license_text:
@@ -99,22 +113,27 @@ def evaluate(info: dict, rules: Rules) -> Candidate:
     license_raw = info.get("license")
     duration = info.get("duration")
     channel_id = info.get("channel_id")
+    title = info.get("title") or ""
+    excluded = next((k for k in rules.exclude_keywords if _contains_word(title, k)), None)
     ok, reason = classify_license(license_raw)
+    # Thông báo là lambda: chỉ format khi điều kiện đúng (tránh format None).
     checks = [
         (rules.trusted_channels and channel_id not in rules.trusted_channels,
-         f"kênh '{info.get('channel')}' ({channel_id}) không phải kênh chính chủ được tin cậy"),
-        (rules.title_keywords and not any(normalize(k) in normalize(info.get("title", ""))
-                                          for k in rules.title_keywords),
-         f"tiêu đề không chứa từ khóa {rules.title_keywords}"),
-        (duration is None, "không xác định được thời lượng"),
+         lambda: f"kênh '{info.get('channel')}' ({channel_id}) không thuộc danh sách kênh tin cậy"),
+        (rules.title_keywords and not any(_contains_word(title, k) for k in rules.title_keywords),
+         lambda: f"tiêu đề không chứa từ khóa {rules.title_keywords}"),
+        (excluded is not None, lambda: f"tiêu đề chứa từ khóa loại trừ '{excluded}' (không phải MV)"),
+        (duration is None, lambda: "không xác định được thời lượng"),
         (duration is not None and duration < rules.min_duration,
-         f"quá ngắn: {(duration or 0) / 60:.1f} phút < {rules.min_duration / 60:g} phút"),
+         lambda: f"quá ngắn: {duration:.0f} s < {rules.min_duration:g} s"),
+        (duration is not None and rules.max_duration is not None and duration > rules.max_duration,
+         lambda: f"quá dài: {duration:.0f} s > {rules.max_duration:g} s"),
         (info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"),
-         "đang livestream – không tải"),
+         lambda: "đang livestream – không tải"),
     ]
     for failed, message in checks:
         if ok and failed:
-            ok, reason = False, message
+            ok, reason = False, message()
     return Candidate(
         url=info.get("webpage_url") or info.get("original_url") or info.get("url", ""),
         video_id=info.get("id"), title=info.get("title"),
@@ -138,7 +157,7 @@ def _ydl(extra: dict | None = None):
     return yt_dlp.YoutubeDL(opts)
 
 
-def search_urls(query: str, max_results: int, length: str = "long") -> list[str]:
+def search_urls(query: str, max_results: int, length: str = "any") -> list[str]:
     url = YOUTUBE_SEARCH.format(query=quote_plus(query), sp=SEARCH_FILTERS[length])
     with _ydl({"extract_flat": "in_playlist", "playlistend": max_results}) as ydl:
         result = ydl.extract_info(url, download=False)
@@ -178,7 +197,7 @@ def download(candidate: Candidate, settings: Settings, max_height: int, rules: R
         info = ydl.extract_info(candidate.url, download=True)
         # info là None khi video đã có trong download_archive (đã tải trước đó).
         if info is not None:
-            # Kiểm tra lại trên đúng metadata của lần tải (phòng thay đổi giữa chừng).
+            # Kiểm tra lại giấy phép/kênh trên đúng metadata của lần tải (phòng thay đổi giữa chừng).
             again = evaluate(info, Rules(0, trusted_channels=rules.trusted_channels))
             if not again.accepted:
                 raise RuntimeError(f"Metadata thay đổi khi tải: {again.reason}")
@@ -189,6 +208,14 @@ def download(candidate: Candidate, settings: Settings, max_height: int, rules: R
             raise FileNotFoundError(f"Không thấy file đã tải cho {candidate.video_id}")
         path = matches[0]
     return path
+
+
+def write_candidates(path: Path, summary: dict) -> None:
+    """Ghi danh sách ứng viên (chấp nhận + từ chối) để người dùng duyệt trước khi tải."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows = [{**c, "accepted": "yes" if c["accepted"] else "no", "checked_at": now}
+            for c in summary["accepted"] + summary["rejected"]]
+    write_csv(path, CANDIDATE_COLUMNS, rows)
 
 
 def run(settings: Settings, urls: list[str], dry_run: bool, max_height: int, rules: Rules,
@@ -204,12 +231,13 @@ def run(settings: Settings, urls: list[str], dry_run: bool, max_height: int, rul
             logger.error("Không đọc được metadata %s: %s", url, exc)
             summary["failed"].append({"url": url, "error": str(exc)})
             continue
-        minutes = f"{cand.duration / 60:.1f} phút" if cand.duration else "?"
+        length = f"{cand.duration:.0f} s" if cand.duration else "?"
         if not cand.accepted:
-            logger.warning("TỪ CHỐI %s (%s, %s): %s", url, cand.title, minutes, cand.reason)
+            logger.warning("TỪ CHỐI %s (%s, %s): %s", url, cand.title, length, cand.reason)
             summary["rejected"].append(asdict(cand))
             continue
-        logger.info("CHẤP NHẬN %s | %s | %s | kênh: %s", url, cand.title, minutes, cand.uploader)
+        logger.info("CHẤP NHẬN %s | %s | %s | kênh: %s (%s)", url, cand.title, length, cand.uploader,
+                    cand.channel_id)
         summary["accepted"].append(asdict(cand))
         if dry_run:
             continue
@@ -227,28 +255,36 @@ def run(settings: Settings, urls: list[str], dry_run: bool, max_height: int, rul
                         notes=f"yt-dlp license field: {cand.license_raw}")
         summary["downloaded"].append(path.name)
         logger.info("Đã tải: %s", path.name)
+    if dry_run:
+        out = settings.paths.metadata / "download_candidates.csv"
+        write_candidates(out, summary)
+        logger.info("Đã ghi danh sách ứng viên: %s – duyệt kênh/tiêu đề rồi tải bằng --url / --url-file", out)
     if summary["downloaded"]:
         scan(settings)
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Tải video ca nhạc YouTube giấy phép CC BY vào dataset")
-    parser.add_argument("--preset", help="Preset trong config/music_presets.json (vd. atvncg)")
+    ensure_utf8_stdio()
+    parser = argparse.ArgumentParser(description="Tìm/tải Music Video YouTube giấy phép CC BY vào dataset")
+    parser.add_argument("--preset", help="Preset trong config/music_presets.json (vd. music_video)")
     parser.add_argument("--url", action="append", default=[], help="URL video (lặp lại được)")
-    parser.add_argument("--url-file", type=Path, help="File text, mỗi dòng một URL")
+    parser.add_argument("--url-file", type=Path, help="File text, mỗi dòng một URL (dòng # là chú thích)")
     parser.add_argument("--search", action="append", default=[], help="Truy vấn tìm kiếm (bộ lọc CC)")
-    parser.add_argument("--max-results", type=int, default=10, help="Số kết quả mỗi truy vấn")
-    parser.add_argument("--length", choices=sorted(SEARCH_FILTERS), default="long",
-                        help="Bộ lọc độ dài khi tìm: long (>20 phút, mặc định), medium (4–20), any")
+    parser.add_argument("--max-results", type=int, default=20, help="Số kết quả mỗi truy vấn")
+    parser.add_argument("--length", choices=sorted(SEARCH_FILTERS), default="any",
+                        help="Bộ lọc độ dài khi tìm (mặc định any; thời lượng vẫn lọc 150–330 s trong code)")
     parser.add_argument("--limit", type=int, help="Dừng sau khi chấp nhận N video")
-    parser.add_argument("--category", help="music_show / music_video / concert")
-    parser.add_argument("--series", help='Tên chương trình, vd. "Anh Trai Vượt Ngàn Chông Gai"')
-    parser.add_argument("--trusted-channel", action="append", default=[], help="channel_id được tin cậy")
+    parser.add_argument("--category", help="music_video")
+    parser.add_argument("--series", help="Tùy chọn: album / dự án / nghệ sĩ")
+    parser.add_argument("--trusted-channel", action="append", default=[], help="Chỉ nhận channel_id này (lặp lại được)")
     parser.add_argument("--title-keyword", action="append", default=[], help="Tiêu đề phải chứa (không dấu)")
-    parser.add_argument("--max-height", type=int, default=720, help="Độ phân giải tối đa (mặc định 720p)")
+    parser.add_argument("--exclude-keyword", action="append", default=[], help="Thêm từ khóa loại trừ")
+    parser.add_argument("--max-height", type=int, default=720, help="Độ phân giải tối đa (720 hoặc 1080)")
     parser.add_argument("--min-duration", type=float, help="Ghi đè VI_MIN_VIDEO_DURATION_SEC (giây)")
-    parser.add_argument("--dry-run", action="store_true", help="Chỉ kiểm tra, không tải")
+    parser.add_argument("--max-duration", type=float, help="Ghi đè VI_MAX_VIDEO_DURATION_SEC (giây)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Chỉ kiểm tra, không tải; ghi metadata/download_candidates.csv")
     parser.add_argument("--dataset-dir", type=Path)
     args = parser.parse_args(argv)
 
@@ -258,10 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     preset = load_preset(args.preset) if args.preset else {}
     rules = Rules(
         min_duration=settings.min_video_duration_sec if args.min_duration is None else args.min_duration,
+        max_duration=settings.max_video_duration_sec if args.max_duration is None else args.max_duration,
         category=args.category or preset.get("category") or "music_video",
         series=args.series if args.series is not None else preset.get("series", ""),
         trusted_channels={**preset.get("trusted_channels", {}), **{c: "CLI" for c in args.trusted_channel}},
         title_keywords=args.title_keyword or preset.get("title_keywords", []),
+        exclude_keywords=preset.get("exclude_keywords", []) + args.exclude_keyword,
     )
     if settings.allowed_categories and rules.category not in settings.allowed_categories:
         parser.error(f"--category phải thuộc {list(settings.allowed_categories)}")

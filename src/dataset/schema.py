@@ -6,8 +6,9 @@ giai đoạn sau (Spark) dùng cùng một schema.
 from __future__ import annotations
 
 VIDEO_COLUMNS = [
-    "video_id",            # video_001, video_002 ... gán một lần, không đổi
-    "filename",
+    "video_id",            # MV_001, MV_002 ... gán một lần, không đổi
+    "filename",            # giữ tên gốc (vd. yt_<youtube_id>.mp4) để truy được nguồn
+    "title",               # tiêu đề MV (lấy từ sources.csv)
     "filepath",            # tương đối so với thư mục dataset, dạng POSIX
     "duration_seconds",
     "fps",
@@ -18,8 +19,8 @@ VIDEO_COLUMNS = [
     "source",              # youtube / user / ... (lấy từ sources.csv)
     "license",
     "processing_status",   # xem PROCESSING_STATUSES
-    "category",            # domain: music_show / music_video / concert (xem VI_ALLOWED_CATEGORIES)
-    "series",              # tên chương trình, vd. "Anh Trai Vượt Ngàn Chông Gai"
+    "category",            # domain: music_video (xem VI_ALLOWED_CATEGORIES)
+    "series",              # tùy chọn: album / dự án / nghệ sĩ
     # Cột bổ sung phục vụ validation / resume:
     "codec",
     "container_duration_seconds",
@@ -45,13 +46,20 @@ SOURCE_COLUMNS = [
     "notes",
 ]
 
-LABEL_COLUMNS = ["class_id", "object_name", "name_vi", "supported_by"]
+LABEL_COLUMNS = ["class_id", "object_name", "name_vi", "supported_by", "is_target"]
 
 GROUND_TRUTH_COLUMNS = [
     "video_id", "object_name", "start_seconds", "end_seconds", "annotator", "notes",
 ]
 
 SPLIT_COLUMNS = ["video_id", "filename", "split"]
+
+# Video đã gỡ khỏi dataset (chuyển vào archive/): giữ lại nguồn + giấy phép để truy vết.
+ARCHIVE_COLUMNS = [
+    "video_id", "filename", "archived_path", "duration_seconds", "width", "height", "file_size",
+    "sha256", "source", "source_url", "title", "author", "license", "category", "series",
+    "removed_at", "reason",
+]
 
 PROCESSING_STATUSES = (
     "pending",      # đã quét, chưa kiểm tra sâu
@@ -89,3 +97,8 @@ COCO_CLASSES = [
     ("toothbrush", "bàn chải đánh răng"),
 ]
 assert len(COCO_CLASSES) == 80
+
+# 10 lớp mục tiêu của đề tài (đều thuộc COCO). Các lớp COCO khác vẫn truy vấn được.
+TARGET_CLASSES = ("person", "car", "motorcycle", "bus", "bicycle", "dog", "cat", "chair",
+                  "bottle", "backpack")
+assert set(TARGET_CLASSES) <= {name for name, _ in COCO_CLASSES}

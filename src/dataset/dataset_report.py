@@ -11,13 +11,13 @@ from pathlib import Path
 
 from config.settings import Settings, get_settings
 from src.common.io_utils import atomic_write_text, read_csv, read_json
-from src.common.logging_utils import setup_logging
+from src.common.logging_utils import ensure_utf8_stdio, setup_logging
 from src.dataset.create_dataset import write_dataset_info
 
 logger = logging.getLogger(__name__)
 
-TARGET_VIDEOS = (10, 20)
-TARGET_HOURS = (2, 5)
+# Giả định chỉ để ƯỚC TÍNH số frame theo mốc (không phải số liệu đo): MV trung bình 4 phút.
+ASSUMED_AVG_MV_SECONDS = 240
 
 
 def _hms(seconds: float) -> str:
@@ -50,6 +50,21 @@ def build_report(settings: Settings | None = None) -> tuple[dict, str]:
     durations = [_f(v.get("duration_seconds")) for v in valid]
     hours = sum(durations) / 3600
     short = [v for v in valid if _f(v.get("duration_seconds")) < settings.min_video_duration_sec]
+    long_ = [v for v in valid if settings.max_video_duration_sec
+             and _f(v.get("duration_seconds")) > settings.max_video_duration_sec]
+    low_res = [v for v in valid if max(int(_f(v.get("width"))), int(_f(v.get("height")))) < settings.min_long_side_px]
+    # "Đạt tiêu chí" = hợp lệ, đúng thời lượng, đúng độ phân giải, có giấy phép, đúng domain.
+    eligible = [v for v in valid if v not in short and v not in long_ and v not in low_res
+                and v.get("license")
+                and (not settings.allowed_categories
+                     or (v.get("category") or "").lower() in settings.allowed_categories)]
+    eligible_ids = {v.get("video_id") for v in eligible}
+    milestones = []
+    for m in settings.target_milestones:
+        milestones.append({"target": m, "reached": len(eligible) >= m,
+                           "est_frames_1fps": m * ASSUMED_AVG_MV_SECONDS,
+                           "est_frames_2fps": m * ASSUMED_AVG_MV_SECONDS * 2})
+    current = max((m["target"] for m in milestones if m["reached"]), default=None)
     splits = {s: len(read_csv(paths.splits / f"{s}.csv")) for s in ("train", "validation", "test")}
     stats = {
         "total_videos": len(videos),
@@ -66,11 +81,16 @@ def build_report(settings: Settings | None = None) -> tuple[dict, str]:
         "out_of_domain": sum(1 for v in videos if settings.allowed_categories
                              and (v.get("category") or "").lower() not in settings.allowed_categories),
         "too_short": len(short),
+        "too_long": len(long_),
+        "low_resolution": len(low_res),
+        "eligible_videos": len(eligible),
+        "eligible_seconds": round(sum(_f(v.get("duration_seconds")) for v in eligible), 3),
+        "milestones": milestones,
+        "current_milestone": current,
         "splits": splits,
         "min_minutes": round(min(durations) / 60, 2) if durations else None,
         "max_minutes": round(max(durations) / 60, 2) if durations else None,
         "avg_minutes": round(sum(durations) / len(durations) / 60, 2) if durations else None,
-        "target_met": TARGET_VIDEOS[0] <= len(valid) and TARGET_HOURS[0] <= hours,
     }
 
     lines = [
@@ -80,12 +100,15 @@ def build_report(settings: Settings | None = None) -> tuple[dict, str]:
         "",
         "## Tổng quan",
         "",
-        "| Chỉ số | Giá trị | Mục tiêu |",
+        "| Chỉ số | Giá trị | Yêu cầu |",
         "|---|---|---|",
-        f"| Số video (tổng / hợp lệ) | {stats['total_videos']} / {stats['valid_videos']} | {TARGET_VIDEOS[0]}–{TARGET_VIDEOS[1]} |",
-        f"| Tổng thời lượng hợp lệ | {_hms(sum(durations))} ({hours:.2f} giờ) | {TARGET_HOURS[0]}–{TARGET_HOURS[1]} giờ |",
-        f"| Thời lượng min / TB / max | {stats['min_minutes']} / {stats['avg_minutes']} / {stats['max_minutes']} phút | ≥ {settings.min_video_duration_sec / 60:g} phút |",
-        f"| Video quá ngắn | {stats['too_short']} | 0 |",
+        f"| Số video (tổng / hợp lệ / **đạt tiêu chí MV**) | {stats['total_videos']} / {stats['valid_videos']} / **{stats['eligible_videos']}** | mốc {', '.join(map(str, settings.target_milestones))} |",
+        f"| Tổng thời lượng MV đạt tiêu chí | {_hms(stats['eligible_seconds'])} | |",
+        (f"| Thời lượng min / TB / max | {stats['min_minutes']} / {stats['avg_minutes']} / {stats['max_minutes']} phút"
+         if durations else "| Thời lượng min / TB / max | -") +
+        f" | {settings.min_video_duration_sec:g}–{settings.max_video_duration_sec:g} s |",
+        f"| Quá ngắn / quá dài | {stats['too_short']} / {stats['too_long']} | 0 / 0 |",
+        f"| Dưới 720p | {stats['low_resolution']} | 0 |",
         f"| Tổng dung lượng | {_size(stats['total_size'])} | |",
         f"| Định dạng | {stats['formats'] or '-'} | |",
         f"| Độ phân giải | {stats['resolutions'] or '-'} | |",
@@ -93,12 +116,23 @@ def build_report(settings: Settings | None = None) -> tuple[dict, str]:
         f"| Trạng thái xử lý | {stats['status'] or '-'} | |",
         f"| Giấy phép | {stats['licenses'] or '-'} | đều phải được khai báo |",
         f"| Thể loại (category) | {stats['categories'] or '-'} | {', '.join(settings.allowed_categories) or 'không giới hạn'} |",
-        f"| Chương trình (series) | {stats['series'] or '-'} | ưu tiên Anh Trai Vượt Ngàn Chông Gai |",
         f"| Video ngoài domain | {stats['out_of_domain']} | 0 |",
         f"| Split train / val / test | {splits['train']} / {splits['validation']} / {splits['test']} | |",
-        f"| Đạt mục tiêu tối thiểu | {'CÓ' if stats['target_met'] else 'CHƯA'} | |",
         "",
+        "## Tiến độ theo mốc",
+        "",
+        f"Mốc hiện tại: **{current if current else 'chưa đạt mốc nào'}** "
+        f"({stats['eligible_videos']} MV đạt tiêu chí).",
+        "",
+        "| Mốc | Trạng thái | Frame ước tính @1 fps | @2 fps |",
+        "|---|---|---|---|",
     ]
+    for m in milestones:
+        lines.append(f"| {m['target']} MV | {'✅ đạt' if m['reached'] else '⏳ chưa'} | "
+                     f"~{m['est_frames_1fps']:,} | ~{m['est_frames_2fps']:,} |")
+    lines += ["",
+              f"> Số frame là **ước tính** với giả định MV trung bình {ASSUMED_AVG_MV_SECONDS // 60} phút, "
+              "không phải số đo. Số frame thực tế được thống kê sau khi trích xuất (Giai đoạn 3).", ""]
     if validation:
         lines += [f"Validation gần nhất ({validation.get('validated_at')}, {validation.get('mode')}): "
                   f"{validation.get('errors')} lỗi, {validation.get('warnings')} cảnh báo.", ""]
@@ -106,16 +140,17 @@ def build_report(settings: Settings | None = None) -> tuple[dict, str]:
         lines += ["Chưa chạy validation (`python -m src.dataset.validate_dataset`).", ""]
     if videos:
         lines += ["## Danh sách video", "",
-                  "| video_id | file | thời lượng | FPS | độ phân giải | dung lượng | thể loại | chương trình | nguồn | giấy phép | trạng thái |",
+                  "| video_id | tiêu đề | file | thời lượng | FPS | độ phân giải | dung lượng | nguồn | giấy phép | trạng thái | đạt tiêu chí |",
                   "|---|---|---|---|---|---|---|---|---|---|---|"]
         for v in videos:
+            title = (v.get("title") or "-").replace("|", "/")
             lines.append(
-                f"| {v.get('video_id')} | {v.get('filename')} | {_hms(_f(v.get('duration_seconds')))} | "
+                f"| {v.get('video_id')} | {title} | {v.get('filename')} | {_hms(_f(v.get('duration_seconds')))} | "
                 f"{_f(v.get('fps')):.2f} | {v.get('width')}x{v.get('height')} | {_size(_f(v.get('file_size')))} | "
-                f"{v.get('category') or '-'} | {v.get('series') or '-'} | "
-                f"{v.get('source') or '-'} | {v.get('license') or '-'} | {v.get('processing_status')} |")
+                f"{v.get('source') or '-'} | {v.get('license') or '-'} | {v.get('processing_status')} | "
+                f"{'có' if v.get('video_id') in eligible_ids else 'không'} |")
     else:
-        lines += ["**Dataset chưa có video.** Xem `dataset/README.md` để đưa video vào.", ""]
+        lines += ["**Dataset chưa có MV nào.** Xem `dataset/README.md` để đưa MV vào.", ""]
     markdown = "\n".join(lines) + "\n"
     if paths.metadata.exists():
         atomic_write_text(paths.report_md, markdown)
@@ -123,6 +158,7 @@ def build_report(settings: Settings | None = None) -> tuple[dict, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Thống kê tổng quan Dataset")
     parser.add_argument("--dataset-dir", type=Path)
     args = parser.parse_args(argv)

@@ -34,8 +34,10 @@ def make_video(path: Path, seconds: float = 3.0, fps: int = 10, size=(64, 48), s
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    # Ngưỡng thời lượng nhỏ để video test vài giây được coi là "đủ dài".
-    return Settings(dataset_dir=tmp_path / "dataset", log_dir=tmp_path / "logs", min_video_duration_sec=2)
+    # Ngưỡng thời lượng / độ phân giải nhỏ để video test vài giây, 64x48 được coi là hợp lệ.
+    # archive_dir trỏ vào thư mục tạm: test không bao giờ đụng tới archive/ thật của repo.
+    return Settings(dataset_dir=tmp_path / "dataset", log_dir=tmp_path / "logs", archive_dir=tmp_path / "archive",
+                    min_video_duration_sec=2, max_video_duration_sec=330, min_long_side_px=1)
 
 
 @pytest.fixture

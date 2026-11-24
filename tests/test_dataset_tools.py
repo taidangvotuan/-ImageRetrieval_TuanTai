@@ -30,6 +30,9 @@ def test_create_empty_dataset_structure(settings):
     assert read_csv(p.videos_csv) == []  # không có dòng giả
     labels = read_csv(p.annotations / "labels.csv")
     assert len(labels) == 80 and labels[2]["object_name"] == "car"
+    targets = {r["object_name"] for r in labels if r["is_target"] == "yes"}
+    assert targets == {"person", "car", "motorcycle", "bus", "bicycle", "dog", "cat", "chair", "bottle", "backpack"}
+    assert (p.annotations / "annotation_guide.md").exists()
     for name in ("train", "validation", "test"):
         assert (p.splits / f"{name}.csv").exists()
     assert (p.annotations / "ground_truth.csv").exists()
@@ -53,7 +56,7 @@ def test_tools_succeed_on_empty_dataset(settings):
     report = validate(settings)
     assert report["ok"] and report["total_videos"] == 0
     stats, md = build_report(settings)
-    assert stats["total_videos"] == 0 and "chưa có video" in md
+    assert stats["total_videos"] == 0 and "chưa có MV nào" in md
 
 
 def test_main_entrypoints_on_empty_dataset(tmp_path):
@@ -71,7 +74,7 @@ def test_valid_video_metadata(settings, video_factory):
     rows = scan(settings)
     assert len(rows) == 1
     row = rows[0]
-    assert row["video_id"] == "video_001"
+    assert row["video_id"] == "MV_001"
     assert row["filepath"] == "raw/videos/a.mp4"  # tương đối, không tuyệt đối
     assert float(row["fps"]) == pytest.approx(10)
     assert int(row["total_frames"]) == 30
@@ -87,7 +90,8 @@ def test_valid_video_metadata(settings, video_factory):
 
 def test_too_short_is_warning_and_strict_error(tmp_path):
     from tests.conftest import make_video
-    s = Settings(dataset_dir=tmp_path / "ds", log_dir=tmp_path / "l", min_video_duration_sec=600)
+    s = Settings(dataset_dir=tmp_path / "ds", log_dir=tmp_path / "l", archive_dir=tmp_path / "a",
+                 min_video_duration_sec=150, min_long_side_px=1)
     make_video(s.paths.raw_videos / "short.mp4", seconds=2)
     scan(s)
     report = validate(s)
@@ -140,7 +144,7 @@ def test_duplicate_content_detected(settings, video_factory):
     rows = {r["filename"]: r for r in scan(settings)}
     assert rows["a.mp4"]["processing_status"] == "pending"
     assert rows["b_copy.mp4"]["processing_status"] == "invalid"
-    assert "video_001" in rows["b_copy.mp4"]["notes"]
+    assert "MV_001" in rows["b_copy.mp4"]["notes"]
     assert "duplicate_content" in codes(validate(settings), "error")
     # Xóa bản gốc -> bản sao không còn bị coi là trùng ở lần quét sau.
     a.unlink()
@@ -198,7 +202,7 @@ def test_incremental_scan_keeps_ids_and_skips_rehash(settings, video_factory, mo
     video_factory("b.mp4", seed=1)
     video_factory("a.mp4", seed=2)
     first = {r["filename"]: r["video_id"] for r in scan(settings)}
-    assert sorted(first.values()) == ["video_001", "video_002"]
+    assert sorted(first.values()) == ["MV_001", "MV_002"]
 
     calls = []
     original = scan_mod.sha256_file
@@ -206,7 +210,7 @@ def test_incremental_scan_keeps_ids_and_skips_rehash(settings, video_factory, mo
     video_factory("c.mp4", seed=3)
     second = {r["filename"]: r["video_id"] for r in scan(settings)}
     assert {k: second[k] for k in first} == first      # id cũ không đổi
-    assert second["c.mp4"] == "video_003"
+    assert second["c.mp4"] == "MV_003"
     assert [p.name for p in calls] == ["c.mp4"]         # chỉ băm file mới
 
 
@@ -242,49 +246,117 @@ def test_report_counts(settings, video_factory):
     stats, md = build_report(settings)
     assert stats["total_videos"] == 2 and stats["valid_videos"] == 2
     assert stats["formats"] == {".mp4": 2}
-    assert "video_002" in md and settings.paths.report_md.exists()
+    assert "MV_002" in md and settings.paths.report_md.exists()
 
 
-# ---------------------------------------------------------------- domain ca nhạc
+# ---------------------------------------------------------------- domain Music Video
 def test_out_of_domain_warning(settings, video_factory):
     video_factory("walk.mp4", seed=1)
-    video_factory("show.mp4", seed=2)
-    register_source(settings, "show.mp4", source="youtube", license="CC BY", category="music_show",
-                    series="Anh Trai Vượt Ngàn Chông Gai")
+    video_factory("mv.mp4", seed=2)
+    register_source(settings, "mv.mp4", source="youtube", license="CC BY", category="music_video",
+                    title="Bài hát A (Official MV)")
     register_source(settings, "walk.mp4", source="youtube", license="CC BY", category="walking_tour")
     rows = {r["filename"]: r for r in scan(settings)}
-    assert rows["show.mp4"]["series"] == "Anh Trai Vượt Ngàn Chông Gai"
+    assert rows["mv.mp4"]["title"] == "Bài hát A (Official MV)"   # title được chép vào videos.csv
     report = validate(settings)
     flagged = {i["filename"] for i in report["issues"] if i["code"] == "out_of_domain"}
     assert flagged == {"walk.mp4"} and report["ok"]
     strict = validate(settings, strict=True)
     status = {r["filename"]: r["processing_status"] for r in read_csv(settings.paths.videos_csv)}
-    assert not strict["ok"] and status == {"walk.mp4": "invalid", "show.mp4": "validated"}
+    assert not strict["ok"] and status == {"walk.mp4": "invalid", "mv.mp4": "validated"}
     stats, md = build_report(settings)
-    assert stats["out_of_domain"] == 1 and "Anh Trai Vượt Ngàn Chông Gai" in md
+    assert stats["out_of_domain"] == 1 and stats["eligible_videos"] == 1
+    assert "Bài hát A (Official MV)" in md
+
+
+def test_too_long_and_low_resolution(tmp_path):
+    from tests.conftest import make_video
+    s = Settings(dataset_dir=tmp_path / "ds", log_dir=tmp_path / "l", archive_dir=tmp_path / "a",
+                 min_video_duration_sec=1, max_video_duration_sec=2, min_long_side_px=100)
+    make_video(s.paths.raw_videos / "long.mp4", seconds=4, size=(128, 72), seed=1)   # quá dài, đủ độ phân giải
+    make_video(s.paths.raw_videos / "small.mp4", seconds=1.5, size=(64, 48), seed=2)  # đúng thời lượng, thấp
+    scan(s)
+    report = validate(s)
+    by_code = {}
+    for issue in report["issues"]:
+        by_code.setdefault(issue["code"], set()).add(issue["filename"])
+    assert by_code["too_long"] == {"long.mp4"}
+    assert by_code["low_resolution"] == {"small.mp4"}
+    assert "too_short" not in by_code and report["ok"]          # chỉ là cảnh báo
+    assert not validate(s, strict=True)["ok"]
+
+
+def test_report_milestones_count_only_eligible(settings, video_factory):
+    for i in range(3):
+        video_factory(f"v{i}.mp4", seed=i)
+        register_source(settings, f"v{i}.mp4", license="CC BY", category="music_video")
+    video_factory("nolicense.mp4", seed=9)                       # thiếu giấy phép -> không tính
+    scan(settings)
+    validate(settings)
+    stats, md = build_report(settings)
+    assert stats["eligible_videos"] == 3 and stats["current_milestone"] is None   # mốc đầu là 5
+    assert [m["reached"] for m in stats["milestones"]] == [False, False, False, False]
+    assert stats["milestones"][2] == {"target": 30, "reached": False, "est_frames_1fps": 7200,
+                                      "est_frames_2fps": 14400}
+    assert "ước tính" in md and "chưa đạt mốc nào" in md
 
 
 def test_no_domain_restriction(tmp_path):
     from tests.conftest import make_video
-    s = Settings(dataset_dir=tmp_path / "ds", log_dir=tmp_path / "l", min_video_duration_sec=1,
-                 allowed_categories=())
+    s = Settings(dataset_dir=tmp_path / "ds", log_dir=tmp_path / "l", archive_dir=tmp_path / "a",
+                 min_video_duration_sec=1, min_long_side_px=1, allowed_categories=())
     make_video(s.paths.raw_videos / "a.mp4")
     scan(s)
     assert "out_of_domain" not in codes(validate(s))
 
 
-def test_remove_video(settings, video_factory):
+def test_remove_video_moves_to_archive_outside_dataset(settings, video_factory):
     from src.dataset.scan_videos import remove_video
     video_factory("yt_abc.mp4", seed=1)
     video_factory("keep.mp4", seed=2)
-    register_source(settings, "yt_abc.mp4", license="CC BY")
+    register_source(settings, "yt_abc.mp4", license="CC BY", source="youtube",
+                    source_url="https://www.youtube.com/watch?v=abc", title="Long show", author="Kênh A")
     (settings.paths.metadata / "download_archive.txt").write_text("youtube abc\nyoutube zzz\n", encoding="utf-8")
     scan(settings)
     vid = next(r["video_id"] for r in read_csv(settings.paths.videos_csv) if r["filename"] == "yt_abc.mp4")
-    remove_video(settings, vid)
-    assert (settings.paths.root / "raw" / "removed" / "yt_abc.mp4").exists()
+    remove_video(settings, vid, reason="không phải MV 3–5 phút")
+    archived = settings.archive_dir / "videos" / "yt_abc.mp4"
+    assert archived.exists() and not archived.is_relative_to(settings.paths.root)
+    manifest = read_csv(settings.archive_dir / "archive_manifest.csv")
+    assert len(manifest) == 1
+    rec = manifest[0]
+    assert (rec["video_id"], rec["license"], rec["source_url"], rec["author"], rec["reason"]) == \
+        (vid, "CC BY", "https://www.youtube.com/watch?v=abc", "Kênh A", "không phải MV 3–5 phút")
+    assert rec["archived_path"] == "videos/yt_abc.mp4" and len(rec["sha256"]) == 64
     assert [r["filename"] for r in scan(settings)] == ["keep.mp4"]   # không bị đăng ký lại
     assert read_csv(settings.paths.sources_csv) == []
     assert (settings.paths.metadata / "download_archive.txt").read_text(encoding="utf-8") == "youtube zzz\n"
     with pytest.raises(KeyError):
-        remove_video(settings, "video_999")
+        remove_video(settings, "MV_999")
+
+
+def test_remove_refuses_to_overwrite_archive(settings, video_factory):
+    from src.dataset.scan_videos import remove_video
+    video_factory("a.mp4", seed=1)
+    scan(settings)
+    (settings.archive_dir / "videos").mkdir(parents=True)
+    (settings.archive_dir / "videos" / "a.mp4").write_bytes(b"old")
+    with pytest.raises(FileExistsError):
+        remove_video(settings, "MV_001")
+    assert (settings.paths.raw_videos / "a.mp4").exists()        # file gốc còn nguyên
+    assert read_csv(settings.paths.videos_csv)                    # metadata chưa bị xóa
+
+
+# ---------------------------------------------------------------- CLI khi output bị chuyển hướng
+@pytest.mark.parametrize("module", ["create_dataset", "scan_videos", "validate_dataset",
+                                    "download_videos", "dataset_report"])
+def test_cli_help_works_when_output_is_piped(module):
+    """Windows: stdout bị pipe dùng cp125x -> --help tiếng Việt từng gây UnicodeEncodeError."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    result = subprocess.run([sys.executable, "-m", f"src.dataset.{module}", "--help"], capture_output=True,
+                            cwd=Path(__file__).resolve().parents[1], env=env, timeout=120)
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")[-500:]
+    assert "usage" in result.stdout.decode("utf-8")

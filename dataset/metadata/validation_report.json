@@ -1,9 +1,9 @@
 {
-  "validated_at": "2026-11-23T09:08:32+00:00",
-  "mode": "quick",
+  "validated_at": "2026-11-24T15:02:03+00:00",
+  "mode": "deep",
   "strict": true,
-  "total_videos": 10,
-  "valid_videos": 10,
+  "total_videos": 0,
+  "valid_videos": 0,
   "errors": 0,
   "warnings": 0,
   "ok": true,

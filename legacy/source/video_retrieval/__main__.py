@@ -1,7 +1,7 @@
 """Module entry point for the image retrieval backend.
 
 Example:
-    python -m source.image_retrieval --profile local
+    python -m source.video_retrieval --profile local
 """
 
 from __future__ import annotations

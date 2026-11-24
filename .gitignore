@@ -11,23 +11,45 @@ __pycache__/
 *.py[cod]
 *.log
 .pytest_cache/
+.ipynb_checkpoints/
 logs/
 *.tmp
 
+# --- Hệ điều hành / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/*
+!.vscode/settings.json
+
 # --- Video Intelligence: dữ liệu lớn (giữ cấu trúc thư mục bằng .gitkeep)
+# Video MV có bản quyền âm nhạc: KHÔNG commit, chỉ commit metadata.
 dataset/raw/videos/*
 !dataset/raw/videos/.gitkeep
 dataset/raw/removed/
+dataset/metadata/download_candidates.csv
+archive/
 dataset/processed/**/*
 !dataset/processed/**/
 !dataset/processed/**/.gitkeep
+# yt-dlp: file tải dở
+*.part
+*.ytdl
+
+# --- YOLO / Ultralytics (GĐ4): trọng số tự tải về thư mục hiện tại, thư mục kết quả runs/
 models/*.pt
 models/*.onnx
+/*.pt
+runs/
+
+# --- Spark / Kafka / HDFS (GĐ5–6)
 spark-warehouse/
 metastore_db/
+derby.log
 checkpoints/
+docker/data/
 
-# --- Legacy (ImageRetrieval) – frontend Node
+# --- Legacy (ImageRetrieval → legacy/source/video_retrieval) – frontend Node
 *.tsbuildinfo
 node_modules/
 dist/
@@ -36,9 +58,9 @@ test-results/
 vite.config.js
 vite.config.d.ts
 legacy/data/
-legacy/source/image_retrieval/.work/
-legacy/source/image_retrieval/output/
-legacy/source/image_retrieval/.venv/
+legacy/source/video_retrieval/.work/
+legacy/source/video_retrieval/output/
+legacy/source/video_retrieval/.venv/
 
 # --- Archive
 *.zip

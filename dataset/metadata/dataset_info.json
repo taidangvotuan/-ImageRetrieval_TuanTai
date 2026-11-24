@@ -1,24 +1,27 @@
 {
-  "name": "VideoIntelligence-Music",
-  "version": "0.1.0",
+  "name": "VideoIntelligence-MV",
+  "version": "0.2.0",
   "created_at": "2026-11-23T04:13:10+00:00",
-  "updated_at": "2026-11-23T09:08:32+00:00",
-  "total_videos": 10,
-  "valid_videos": 10,
-  "total_duration_seconds": 19350.3,
-  "valid_duration_seconds": 19350.3,
-  "total_size_bytes": 3326206269,
-  "formats": [
-    ".mp4"
-  ],
+  "updated_at": "2026-11-24T15:04:28+00:00",
+  "total_videos": 0,
+  "valid_videos": 0,
+  "total_duration_seconds": 0,
+  "valid_duration_seconds": 0,
+  "total_size_bytes": 0,
+  "formats": [],
   "supported_formats": [
     ".mp4",
     ".avi",
     ".mkv",
     ".mov"
   ],
-  "min_video_duration_seconds": 600.0,
-  "status_counts": {
-    "validated": 10
-  }
+  "min_video_duration_seconds": 150.0,
+  "max_video_duration_seconds": 330.0,
+  "target_milestones": [
+    5,
+    10,
+    30,
+    50
+  ],
+  "status_counts": {}
 }

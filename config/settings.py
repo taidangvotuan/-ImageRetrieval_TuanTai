@@ -32,6 +32,17 @@ def _float(name: str, default: float) -> float:
     return float(os.environ.get(name, default))
 
 
+def _int(name: str, default: int) -> int:
+    return int(os.environ.get(name, default))
+
+
+def _ints(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return tuple(int(x) for x in value.split(",") if x.strip())
+
+
 def _list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     value = os.environ.get(name)
     if value is None:
@@ -92,7 +103,6 @@ class DatasetPaths:
             self.processed / "frames",
             self.processed / "detections",
             self.processed / "temporal_segments",
-            self.processed / "embeddings",
             self.annotations,
             self.splits,
         ]
@@ -103,18 +113,31 @@ class Settings:
     dataset_dir: Path = field(default_factory=lambda: _path("VI_DATASET_DIR", PROJECT_ROOT / "dataset"))
     log_dir: Path = field(default_factory=lambda: _path("VI_LOG_DIR", PROJECT_ROOT / "logs"))
     log_level: str = field(default_factory=lambda: os.environ.get("VI_LOG_LEVEL", "INFO"))
-    # Video ngắn hơn ngưỡng này bị cảnh báo "too_short" (đề tài: tối thiểu 10 phút).
-    min_video_duration_sec: float = field(default_factory=lambda: _float("VI_MIN_VIDEO_DURATION_SEC", 600))
+    # Dataset chỉ gồm Music Video 3–5 phút. Biên nới thành 150–330 s vì nhiều MV có intro/outro
+    # (vd. 5:20). Ngoài khoảng -> cảnh báo too_short / too_long (lỗi khi --strict).
+    min_video_duration_sec: float = field(default_factory=lambda: _float("VI_MIN_VIDEO_DURATION_SEC", 150))
+    max_video_duration_sec: float = field(default_factory=lambda: _float("VI_MAX_VIDEO_DURATION_SEC", 330))
+    # Chuẩn 720p trở lên: cạnh dài >= 1280 px. Dùng cạnh dài (không dùng chiều cao) để MV
+    # khung điện ảnh 1280x536 vẫn được tính là 720p. Thấp hơn -> cảnh báo low_resolution.
+    min_long_side_px: int = field(default_factory=lambda: _int("VI_MIN_LONG_SIDE_PX", 1280))
     supported_extensions: tuple[str, ...] = field(
         default_factory=lambda: _list("VI_VIDEO_EXTENSIONS", (".mp4", ".avi", ".mkv", ".mov"))
     )
-    # Domain của dataset: chỉ video ca nhạc. Video có category ngoài danh sách bị cảnh báo
-    # "out_of_domain" (lỗi khi --strict). Để rỗng (VI_ALLOWED_CATEGORIES=) để bỏ giới hạn.
+    # Domain: chỉ Music Video. Video có category khác bị cảnh báo "out_of_domain"
+    # (lỗi khi --strict). Để rỗng (VI_ALLOWED_CATEGORIES=) để bỏ giới hạn.
     allowed_categories: tuple[str, ...] = field(
-        default_factory=lambda: _list("VI_ALLOWED_CATEGORIES", ("music_show", "music_video", "concert"))
+        default_factory=lambda: _list("VI_ALLOWED_CATEGORIES", ("music_video",))
     )
-    dataset_name: str = field(default_factory=lambda: os.environ.get("VI_DATASET_NAME", "VideoIntelligence-Music"))
-    dataset_version: str = field(default_factory=lambda: os.environ.get("VI_DATASET_VERSION", "0.1.0"))
+    # Tiền tố video_id: MV_001, MV_002 ... (gán một lần, không đổi).
+    video_id_prefix: str = field(default_factory=lambda: os.environ.get("VI_VIDEO_ID_PREFIX", "MV_"))
+    # Các mốc quy mô Dataset theo giai đoạn (5 kiểm tra pipeline, 10, 30 chính, 50 mở rộng).
+    target_milestones: tuple[int, ...] = field(
+        default_factory=lambda: _ints("VI_TARGET_MILESTONES", (5, 10, 30, 50))
+    )
+    # Video gỡ khỏi dataset được chuyển vào đây (NGOÀI dataset/, bị .gitignore).
+    archive_dir: Path = field(default_factory=lambda: _path("VI_ARCHIVE_DIR", PROJECT_ROOT / "archive"))
+    dataset_name: str = field(default_factory=lambda: os.environ.get("VI_DATASET_NAME", "VideoIntelligence-MV"))
+    dataset_version: str = field(default_factory=lambda: os.environ.get("VI_DATASET_VERSION", "0.2.0"))
     # Tỷ lệ chia train/validation/test theo video (deterministic theo hash video_id).
     split_ratios: tuple[float, float, float] = (0.7, 0.15, 0.15)
 

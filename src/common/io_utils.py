@@ -1,6 +1,6 @@
 """Ghi file an toàn (atomic), đọc/ghi CSV và băm sha256.
 
-Chuyển thể từ ``legacy/source/image_retrieval/common.py``: ghi ra file tạm rồi
+Chuyển thể từ ``legacy/source/video_retrieval/common.py``: ghi ra file tạm rồi
 ``os.replace`` để file đích không bao giờ ở trạng thái ghi dở khi chương trình
 bị ngắt giữa chừng.
 """

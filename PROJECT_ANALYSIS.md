@@ -1,5 +1,9 @@
 # PROJECT ANALYSIS – Video Intelligence (Giai đoạn 1)
 
+> **Cập nhật 2026-11-24 – đổi định hướng Dataset sang Music Video 3–5 phút.** Mục 1–11 bên dưới
+> là phân tích theo định hướng cũ (video ≥ 10 phút, show ATVNCG), giữ lại làm lịch sử. Định hướng
+> hiện hành, các quyết định đã chốt và kiến trúc mới nằm ở **mục 12**.
+
 > Đề tài: **Video Intelligence – Hệ thống truy vấn đối tượng và xác định khoảng thời gian xuất hiện trong video**
 > Môn: Phát triển ứng dụng trên nền tảng dữ liệu lớn
 > Ngày phân tích: 2026-11-23 · Trạng thái: **chỉ phân tích, chưa sửa/xóa file nào của project**
@@ -350,3 +354,78 @@ trưng của video ca nhạc. Trong video ca nhạc, COCO chỉ hữu ích cho `
 
 Đề xuất: **A** làm mặc định (cân bằng tốc độ CPU và độ phủ lớp), B làm tùy chọn để so sánh.
 Lúc đó `annotations/labels.csv` sẽ được sinh lại từ danh sách lớp thật của mô hình.
+
+---
+
+## 12. Đổi định hướng: Dataset Music Video 3–5 phút (2026-11-24)
+
+### 12.1. Yêu cầu mới
+
+| Tiêu chí | Giá trị |
+|---|---|
+| Loại | Chỉ Music Video, MP4 |
+| Thời lượng | 3–5 phút; công cụ chấp nhận **150–330 s** (đã chốt) |
+| Độ phân giải | 720p/1080p (cạnh dài ≥ 1280 px) |
+| Quy mô | 5 → 10 → 30 (chính) → 50 (mở rộng) |
+| Lấy mẫu | 1 fps mặc định, 2 fps thử nghiệm |
+| Lớp mục tiêu | person, car, motorcycle, bus, bicycle, dog, cat, chair, bottle, backpack (đều thuộc COCO) |
+
+Hệ quả: hướng Open Images / YOLO-World ở §11.3 **không còn cần**, vì mọi lớp mục tiêu đều có
+trong COCO. Dùng YOLO nano COCO (yolo11n hoặc yolov8n, chốt ở Giai đoạn 4).
+
+### 12.2. Kết quả audit lại
+
+- 10 video của Dataset cũ (23–50 phút) **không có video nào đạt tiêu chí MV**.
+- Code `src/` tái sử dụng được gần như toàn bộ: ghi atomic, sha256 theo chunk, quét tăng dần,
+  validation, kiểm tra giấy phép CC BY. Chỉ ngưỡng, preset và báo cáo gắn với định hướng cũ.
+- Rủi ro lớn nhất: **nguồn MV hợp pháp khan hiếm**. Phần lớn MV chính thức dùng Standard YouTube
+  License. Không đảm bảo đạt 30–50 MV; báo cáo luôn ghi số thật.
+- Kafka native trên Windows không được hỗ trợ chính thức → chạy bằng Docker.
+- Spark có thể chậm hơn pandas với vài chục nghìn detection, do overhead. Benchmark phải tách
+  thời gian khởi động, YOLO inference và aggregation, rồi báo trung thực.
+
+### 12.3. Quyết định đã chốt
+
+| # | Câu hỏi | Quyết định | Đã thực hiện |
+|---|---|---|---|
+| 1 | 10 video dài | Gỡ khỏi dataset, chuyển vào archive ngoài `dataset/` | `scan_videos --remove-all`: 10 video + walking tour cũ → `archive/videos/`, nguồn/giấy phép ghi vào `archive/archive_manifest.csv` |
+| 2 | Nguồn MV | Công cụ tìm CC BY như cũ, bắt buộc duyệt tay trước khi tải | `--dry-run` ghi `download_candidates.csv`; tải bằng `--url-file` |
+| 3 | Định danh | `video_id` = `MV_001…`; file giữ tên gốc `yt_<id>.mp4` (mặc định đề xuất) | `VI_VIDEO_ID_PREFIX=MV_` |
+| 4 | Thời lượng | Nới thành 150–330 s | `VI_MIN/MAX_VIDEO_DURATION_SEC`, cảnh báo `too_short`/`too_long` |
+| 5 | Kafka/HDFS | Docker là phương án chính, native Windows dự phòng | Áp dụng ở Giai đoạn 5–6 |
+| 6 | Git | Commit checkpoint trước khi sửa | Commit `05c0ed5` |
+| 7 | Tên thư mục code cũ | `legacy/source/video_retrieval/` cho hợp đề tài | Cập nhật `.gitignore`, `legacy/README.md`, `legacy/.env.example`, docstring; tên thư mục dữ liệu `image_retrieval_output` giữ nguyên |
+
+### 12.4. Thay đổi Giai đoạn 2 (định hướng MV)
+
+| File | Thay đổi |
+|---|---|
+| `config/settings.py`, `.env.example` | 150–330 s, `min_long_side_px=1280`, `allowed_categories=music_video`, tiền tố `MV_`, mốc 5/10/30/50, `archive_dir` |
+| `src/dataset/schema.py` | Thêm `title` vào `videos.csv`; `ARCHIVE_COLUMNS`; `TARGET_CLASSES`; `labels.csv` có cột `is_target` |
+| `src/dataset/validate_dataset.py` | Thêm `too_long`, `low_resolution` |
+| `src/dataset/scan_videos.py` | id `MV_xxx`; chép `title` từ sources; `--remove` vào `archive/` (không ghi đè) + manifest; `--remove-all`, `--reason` |
+| `src/dataset/download_videos.py` | Khoảng 150–330 s; `exclude_keywords` theo từ; bộ lọc tìm kiếm mặc định `any`; dry-run ghi `download_candidates.csv`; bỏ preset ATVNCG |
+| `config/music_presets.json` | Preset `music_video` |
+| `src/dataset/dataset_report.py` | Đếm MV **đạt tiêu chí**, tiến độ theo mốc, frame ghi rõ là ước tính |
+| `src/dataset/create_dataset.py` | README Dataset mới, `annotations/annotation_guide.md`; bỏ `processed/embeddings/` |
+| `tests/` | 54 test (trước 39) |
+| `src/common/logging_utils.py` | `ensure_utf8_stdio()` gọi đầu mỗi `main()`: sửa lỗi có từ trước, `--help` crash (UnicodeEncodeError) khi output bị chuyển hướng trên Windows |
+
+### 12.5. Kiến trúc mục tiêu
+
+```text
+LUỒNG 1 – BATCH (MV đã lưu)
+  raw/videos → scan/validate → FrameSampler (OpenCV tuần tự, 1/2 fps, PTS, checkpoint)
+    → YoloDetector (nano, COCO, CPU, batch nhỏ) → detections.parquet (partition video_id)
+    → Spark: lọc conf → gộp theo frame → LAG/SUM OVER → temporal_segments + Spark SQL thống kê
+    → Parquet → HDFS (Docker)
+LUỒNG 2 – STREAMING (sự kiện detection phát lại từ MV đã lưu – KHÔNG phải video thời gian thực)
+  producer → Kafka `vi.detections` (key = video_id, Docker KRaft)
+    → Spark Structured Streaming (checkpointLocation, watermark, dropDuplicates(event_id))
+    → thống kê theo cửa sổ + raw events → Parquet/HDFS
+Streamlit ← đọc Parquet bằng pyarrow (không mở Spark mỗi truy vấn), st.video(start_time=…)
+```
+
+Đánh giá (Giai đoạn 8): gán nhãn tay các MV split test theo `annotation_guide.md`; P/R/F1 mức
+giây và mức khoảng (tIoU ≥ 0,5), sai số |Δstart|, |Δend|.
+

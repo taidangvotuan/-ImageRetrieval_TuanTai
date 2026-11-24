@@ -1,30 +1,21 @@
 {
-  "_comment": "Preset tìm/tải video ca nhạc. trusted_channels: chỉ nhận video do kênh chính chủ đăng (giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung). title_keywords so khớp không dấu, không phân biệt hoa thường.",
-  "atvncg": {
-    "series": "Anh Trai Vượt Ngàn Chông Gai",
-    "category": "music_show",
-    "queries": [
-      "Anh trai vượt ngàn chông gai công diễn",
-      "Anh trai vượt ngàn chông gai tổng hợp",
-      "Anh trai vượt ngàn chông gai"
-    ],
-    "title_keywords": ["anh trai vuot ngan chong gai"],
-    "trusted_channels": {
-      "UC9G7oeTsVSoD2Z2Lt7eKdjQ": "YeaH1 Channel (đơn vị sản xuất chương trình)"
-    }
-  },
-  "concert": {
-    "series": "",
-    "category": "concert",
-    "queries": ["live concert full", "full concert live music festival", "nhạc sống live concert"],
-    "title_keywords": [],
-    "trusted_channels": {}
-  },
+  "_comment": "Preset tìm/tải Music Video giấy phép CC BY. queries chỉ thu hẹp kết quả tìm kiếm; giấy phép, thời lượng (150–330 s) và exclude_keywords luôn được kiểm tra lại cho từng video. trusted_channels rỗng = mọi kênh, nên BẮT BUỘC duyệt tay download_candidates.csv (kênh có phải của nghệ sĩ/hãng không) trước khi tải. exclude_keywords so khớp theo từ, không dấu, không phân biệt hoa thường.",
   "music_video": {
     "series": "",
     "category": "music_video",
-    "queries": ["official music video", "live session full album", "acoustic live session"],
+    "queries": [
+      "official music video",
+      "music video",
+      "indie music video",
+      "MV official"
+    ],
     "title_keywords": [],
+    "exclude_keywords": [
+      "lyric", "lyrics", "lyric video", "karaoke", "official audio", "audio", "visualizer",
+      "visualiser", "1 hour", "10 hours", "loop", "compilation", "full album", "playlist",
+      "reaction", "tutorial", "nightcore", "slowed", "reverb", "8d", "sped up", "teaser",
+      "trailer", "behind the scenes", "making of", "shorts", "remix contest", "fancam"
+    ],
     "trusted_channels": {}
   }
 }

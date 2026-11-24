@@ -7,9 +7,6 @@ from src.common.io_utils import read_csv
 from src.dataset import download_videos as dl
 from tests.conftest import make_video
 
-YEAH1 = "UC9G7oeTsVSoD2Z2Lt7eKdjQ"
-
-
 @pytest.mark.parametrize("text,ok", [
     ("Creative Commons Attribution license (reuse allowed)", True),   # chuỗi YouTube trả về
     ("https://creativecommons.org/licenses/by/4.0/", True),
@@ -25,11 +22,19 @@ def test_classify_license(text, ok):
 
 
 def info(**kw):
-    base = {"id": "abc", "title": "ANH TRAI VƯỢT NGÀN CHÔNG GAI | Công Diễn 5", "channel": "YeaH1 Channel",
-            "channel_id": YEAH1, "webpage_url": "https://youtu.be/abc", "duration": 1200,
+    base = {"id": "abc", "title": "Artist A - Song B (Official Music Video)", "channel": "Artist A",
+            "channel_id": "UCartist", "webpage_url": "https://youtu.be/abc", "duration": 225,
             "license": "Creative Commons Attribution license (reuse allowed)"}
     base.update(kw)
     return base
+
+
+def mv_rules(**kw):
+    preset = dl.load_preset("music_video")
+    params = dict(min_duration=150, max_duration=330, category=preset["category"],
+                  exclude_keywords=preset["exclude_keywords"])
+    params.update(kw)
+    return dl.Rules(**params)
 
 
 def test_normalize_vietnamese():
@@ -37,38 +42,49 @@ def test_normalize_vietnamese():
     assert dl.normalize("Đêm nhạc") == "dem nhac"
 
 
-def test_evaluate_basic_rules():
-    r = dl.Rules(min_duration=600)
+def test_evaluate_duration_window():
+    r = mv_rules()
     assert dl.evaluate(info(), r).accepted
-    assert "quá ngắn" in dl.evaluate(info(duration=120), r).reason
+    assert dl.evaluate(info(duration=150), r).accepted and dl.evaluate(info(duration=330), r).accepted
+    assert "quá ngắn" in dl.evaluate(info(duration=149), r).reason
+    assert "quá dài" in dl.evaluate(info(duration=1452), r).reason     # video tổng hợp 24 phút
     assert not dl.evaluate(info(license=None), r).accepted
     assert not dl.evaluate(info(duration=None), r).accepted
     assert not dl.evaluate(info(live_status="is_live"), r).accepted
 
 
-def test_evaluate_trusted_channel_and_title():
-    preset = dl.load_preset("atvncg")
-    r = dl.Rules(600, preset["category"], preset["series"], preset["trusted_channels"], preset["title_keywords"])
+@pytest.mark.parametrize("title", [
+    "Artist A - Song B (Lyric Video)", "Song B | Official Audio", "Song B [Visualizer]",
+    "Song B 1 HOUR loop", "Song B (slowed + reverb)", "Song B karaoke",
+])
+def test_evaluate_excludes_non_mv_titles(title):
+    cand = dl.evaluate(info(title=title), mv_rules())
+    assert not cand.accepted and "loại trừ" in cand.reason
+
+
+def test_exclude_matches_whole_words_only():
+    # "audio" không được khớp nhầm "Audiovisual"
+    assert dl.evaluate(info(title="Audiovisual Dreams (Official MV)"), mv_rules()).accepted
+
+
+def test_evaluate_trusted_channel():
+    r = mv_rules(trusted_channels={"UCartist": "Artist A"})
     assert dl.evaluate(info(), r).accepted
-    # Kênh reup gắn CC BY -> từ chối dù giấy phép hợp lệ trên giấy
     reup = dl.evaluate(info(channel="Reup Channel", channel_id="UCfake"), r)
-    assert not reup.accepted and "chính chủ" in reup.reason
-    # Cùng kênh YeaH1 nhưng chương trình khác (không phải ca nhạc)
-    other = dl.evaluate(info(title="Gia Đình Haha | tập 5"), r)
-    assert not other.accepted and "từ khóa" in other.reason
-    # So khớp không dấu: tiêu đề viết không dấu vẫn nhận
-    assert dl.evaluate(info(title="anh trai vuot ngan chong gai concert"), r).accepted
+    assert not reup.accepted and "kênh tin cậy" in reup.reason
 
 
 def test_load_preset_unknown():
     with pytest.raises(KeyError):
         dl.load_preset("khong_co")
+    with pytest.raises(KeyError):
+        dl.load_preset("atvncg")          # preset định hướng cũ đã bỏ
 
 
 def test_run_downloads_only_accepted(settings, monkeypatch):
     infos = {"good": info(id="good", webpage_url="good"),
              "nc": info(id="nc", webpage_url="nc", license="CC BY-NC"),
-             "short": info(id="short", webpage_url="short", duration=1)}
+             "long": info(id="long", webpage_url="long", duration=1800)}
     monkeypatch.setattr(dl, "inspect", lambda url, rules: dl.evaluate(infos[url], rules))
     downloaded = []
 
@@ -77,34 +93,38 @@ def test_run_downloads_only_accepted(settings, monkeypatch):
         return make_video(s.paths.raw_videos / f"yt_{cand.video_id}.mp4", seconds=3)
 
     monkeypatch.setattr(dl, "download", fake_download)
-    rules = dl.Rules(2, "music_show", "Anh Trai Vượt Ngàn Chông Gai")
-    summary = dl.run(settings, ["good", "nc", "short", "good"], dry_run=False, max_height=720, rules=rules)
+    summary = dl.run(settings, ["good", "nc", "long", "good"], dry_run=False, max_height=720, rules=mv_rules())
     assert downloaded == ["good"]
-    assert {c["video_id"] for c in summary["rejected"]} == {"nc", "short"}  # URL trùng chỉ xét 1 lần
+    assert {c["video_id"] for c in summary["rejected"]} == {"nc", "long"}  # URL trùng chỉ xét 1 lần
     src = read_csv(settings.paths.sources_csv)[0]
     assert (src["filename"], src["license"], src["channel_id"], src["category"]) == \
-        ("yt_good.mp4", "CC BY", YEAH1, "music_show")
+        ("yt_good.mp4", "CC BY", "UCartist", "music_video")
     video = read_csv(settings.paths.videos_csv)[0]
-    assert (video["license"], video["source"], video["category"], video["series"]) == \
-        ("CC BY", "youtube", "music_show", "Anh Trai Vượt Ngàn Chông Gai")
+    assert (video["video_id"], video["license"], video["source"], video["category"], video["title"]) == \
+        ("MV_001", "CC BY", "youtube", "music_video", "Artist A - Song B (Official Music Video)")
 
 
 def test_run_limit(settings, monkeypatch):
     monkeypatch.setattr(dl, "inspect", lambda url, rules: dl.evaluate(info(id=url, webpage_url=url), rules))
-    summary = dl.run(settings, ["a", "b", "c"], dry_run=True, max_height=720, rules=dl.Rules(600), limit=2)
+    summary = dl.run(settings, ["a", "b", "c"], dry_run=True, max_height=720, rules=mv_rules(), limit=2)
     assert len(summary["accepted"]) == 2
 
 
-def test_run_dry_run_downloads_nothing(settings, monkeypatch):
-    monkeypatch.setattr(dl, "inspect", lambda url, rules: dl.evaluate(info(), rules))
+def test_run_dry_run_writes_candidates_and_downloads_nothing(settings, monkeypatch):
+    infos = {"ok": info(id="ok", webpage_url="ok"), "lyric": info(id="ly", webpage_url="lyric", title="X (Lyrics)")}
+    monkeypatch.setattr(dl, "inspect", lambda url, rules: dl.evaluate(infos[url], rules))
     monkeypatch.setattr(dl, "download", lambda *a: pytest.fail("không được tải khi dry-run"))
-    summary = dl.run(settings, ["x"], dry_run=True, max_height=720, rules=dl.Rules(600))
+    summary = dl.run(settings, ["ok", "lyric"], dry_run=True, max_height=720, rules=mv_rules())
     assert len(summary["accepted"]) == 1 and not summary["downloaded"]
+    rows = read_csv(settings.paths.metadata / "download_candidates.csv")
+    assert {(r["url"], r["accepted"]) for r in rows} == {("ok", "yes"), ("lyric", "no")}
+    assert read_csv(settings.paths.videos_csv) == [] and not any(settings.paths.raw_videos.iterdir()) or \
+        [p.name for p in settings.paths.raw_videos.iterdir()] == [".gitkeep"]
 
 
 def test_metadata_failure_is_reported(settings, monkeypatch):
     def boom(url, rules):
         raise RuntimeError("network down")
     monkeypatch.setattr(dl, "inspect", boom)
-    summary = dl.run(settings, ["x"], dry_run=True, max_height=720, rules=dl.Rules(600))
+    summary = dl.run(settings, ["x"], dry_run=True, max_height=720, rules=mv_rules())
     assert summary["failed"] and summary["failed"][0]["error"] == "network down"

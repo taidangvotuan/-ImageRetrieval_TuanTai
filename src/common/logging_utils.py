@@ -8,13 +8,22 @@ from pathlib import Path
 _CONFIGURED = False
 
 
+def ensure_utf8_stdio() -> None:
+    """Chuyển stdout/stderr sang UTF-8.
+
+    Khi output bị chuyển hướng (``> file``, ``| more``), Windows dùng code page cp125x và
+    không in được tiếng Việt -> UnicodeEncodeError. Phải gọi TRƯỚC ``parse_args()`` vì
+    ``--help`` in ra ngay trong lúc parse.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def setup_logging(level: str = "INFO", log_dir: Path | None = None, name: str = "video_intel") -> logging.Logger:
     global _CONFIGURED
     if not _CONFIGURED:
-        # Console Windows (cp1252) không in được tiếng Việt khi output bị chuyển hướng.
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8", errors="replace")
+        ensure_utf8_stdio()
         handlers: list[logging.Handler] = [logging.StreamHandler()]
         if log_dir is not None:
             Path(log_dir).mkdir(parents=True, exist_ok=True)
