@@ -1,0 +1,81 @@
+class_id,object_name,name_vi,supported_by
+0,person,người,yolo-coco80
+1,bicycle,xe đạp,yolo-coco80
+2,car,ô tô,yolo-coco80
+3,motorcycle,xe máy,yolo-coco80
+4,airplane,máy bay,yolo-coco80
+5,bus,xe buýt,yolo-coco80
+6,train,tàu hỏa,yolo-coco80
+7,truck,xe tải,yolo-coco80
+8,boat,thuyền,yolo-coco80
+9,traffic light,đèn giao thông,yolo-coco80
+10,fire hydrant,trụ cứu hỏa,yolo-coco80
+11,stop sign,biển dừng,yolo-coco80
+12,parking meter,đồng hồ đỗ xe,yolo-coco80
+13,bench,ghế băng,yolo-coco80
+14,bird,chim,yolo-coco80
+15,cat,mèo,yolo-coco80
+16,dog,chó,yolo-coco80
+17,horse,ngựa,yolo-coco80
+18,sheep,cừu,yolo-coco80
+19,cow,bò,yolo-coco80
+20,elephant,voi,yolo-coco80
+21,bear,gấu,yolo-coco80
+22,zebra,ngựa vằn,yolo-coco80
+23,giraffe,hươu cao cổ,yolo-coco80
+24,backpack,ba lô,yolo-coco80
+25,umbrella,ô (dù),yolo-coco80
+26,handbag,túi xách,yolo-coco80
+27,tie,cà vạt,yolo-coco80
+28,suitcase,va li,yolo-coco80
+29,frisbee,đĩa ném,yolo-coco80
+30,skis,ván trượt tuyết,yolo-coco80
+31,snowboard,ván trượt tuyết đơn,yolo-coco80
+32,sports ball,bóng,yolo-coco80
+33,kite,diều,yolo-coco80
+34,baseball bat,gậy bóng chày,yolo-coco80
+35,baseball glove,găng bóng chày,yolo-coco80
+36,skateboard,ván trượt,yolo-coco80
+37,surfboard,ván lướt sóng,yolo-coco80
+38,tennis racket,vợt tennis,yolo-coco80
+39,bottle,chai,yolo-coco80
+40,wine glass,ly rượu,yolo-coco80
+41,cup,cốc,yolo-coco80
+42,fork,nĩa,yolo-coco80
+43,knife,dao,yolo-coco80
+44,spoon,thìa,yolo-coco80
+45,bowl,bát,yolo-coco80
+46,banana,chuối,yolo-coco80
+47,apple,táo,yolo-coco80
+48,sandwich,bánh mì kẹp,yolo-coco80
+49,orange,cam,yolo-coco80
+50,broccoli,bông cải xanh,yolo-coco80
+51,carrot,cà rốt,yolo-coco80
+52,hot dog,xúc xích,yolo-coco80
+53,pizza,pizza,yolo-coco80
+54,donut,bánh donut,yolo-coco80
+55,cake,bánh ngọt,yolo-coco80
+56,chair,ghế,yolo-coco80
+57,couch,ghế sofa,yolo-coco80
+58,potted plant,chậu cây,yolo-coco80
+59,bed,giường,yolo-coco80
+60,dining table,bàn ăn,yolo-coco80
+61,toilet,bồn cầu,yolo-coco80
+62,tv,tivi,yolo-coco80
+63,laptop,máy tính xách tay,yolo-coco80
+64,mouse,chuột máy tính,yolo-coco80
+65,remote,điều khiển,yolo-coco80
+66,keyboard,bàn phím,yolo-coco80
+67,cell phone,điện thoại,yolo-coco80
+68,microwave,lò vi sóng,yolo-coco80
+69,oven,lò nướng,yolo-coco80
+70,toaster,máy nướng bánh,yolo-coco80
+71,sink,bồn rửa,yolo-coco80
+72,refrigerator,tủ lạnh,yolo-coco80
+73,book,sách,yolo-coco80
+74,clock,đồng hồ,yolo-coco80
+75,vase,bình hoa,yolo-coco80
+76,scissors,kéo,yolo-coco80
+77,teddy bear,gấu bông,yolo-coco80
+78,hair drier,máy sấy tóc,yolo-coco80
+79,toothbrush,bàn chải đánh răng,yolo-coco80

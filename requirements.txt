@@ -1,0 +1,14 @@
+# Video Intelligence – Python 3.11 (.venv-vi)
+# Chỉ liệt kê thư viện đã được cài và kiểm thử ở các giai đoạn đã hoàn thành.
+# Các giai đoạn sau sẽ bổ sung (ultralytics, pyspark==4.2.0, kafka-python, streamlit)
+# sau khi kiểm tra tương thích.
+
+# --- Giai đoạn 2: Dataset & metadata video
+opencv-python-headless==5.1.0.95
+imageio-ffmpeg==0.8.1        # cung cấp binary FFmpeg, không cần cài FFmpeg hệ thống
+yt-dlp==2026.10.26           # tải video YouTube giấy phép CC BY
+numpy==2.4.6
+pandas==2.3.3                # ghim 2.3.x: tương thích PySpark 4.2.0 (giai đoạn 5)
+pyarrow==26.0.1
+python-dotenv==1.2.4
+psutil==7.2.2

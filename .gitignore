@@ -1,11 +1,33 @@
+# --- Secrets / môi trường
 .env
 .env.*
 !.env.example
 .venv/
+.venv-vi/
 venv/
+
+# --- Python / công cụ
 __pycache__/
 *.py[cod]
 *.log
+.pytest_cache/
+logs/
+*.tmp
+
+# --- Video Intelligence: dữ liệu lớn (giữ cấu trúc thư mục bằng .gitkeep)
+dataset/raw/videos/*
+!dataset/raw/videos/.gitkeep
+dataset/raw/removed/
+dataset/processed/**/*
+!dataset/processed/**/
+!dataset/processed/**/.gitkeep
+models/*.pt
+models/*.onnx
+spark-warehouse/
+metastore_db/
+checkpoints/
+
+# --- Legacy (ImageRetrieval) – frontend Node
 *.tsbuildinfo
 node_modules/
 dist/
@@ -13,10 +35,12 @@ playwright-report/
 test-results/
 vite.config.js
 vite.config.d.ts
-data/
-source/image_retrieval/.work/
-source/image_retrieval/output/
-source/image_retrieval/.venv/
+legacy/data/
+legacy/source/image_retrieval/.work/
+legacy/source/image_retrieval/output/
+legacy/source/image_retrieval/.venv/
+
+# --- Archive
 *.zip
 *.tar
 *.tgz

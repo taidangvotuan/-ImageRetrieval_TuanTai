@@ -1,0 +1,30 @@
+{
+  "_comment": "Preset tìm/tải video ca nhạc. trusted_channels: chỉ nhận video do kênh chính chủ đăng (giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung). title_keywords so khớp không dấu, không phân biệt hoa thường.",
+  "atvncg": {
+    "series": "Anh Trai Vượt Ngàn Chông Gai",
+    "category": "music_show",
+    "queries": [
+      "Anh trai vượt ngàn chông gai công diễn",
+      "Anh trai vượt ngàn chông gai tổng hợp",
+      "Anh trai vượt ngàn chông gai"
+    ],
+    "title_keywords": ["anh trai vuot ngan chong gai"],
+    "trusted_channels": {
+      "UC9G7oeTsVSoD2Z2Lt7eKdjQ": "YeaH1 Channel (đơn vị sản xuất chương trình)"
+    }
+  },
+  "concert": {
+    "series": "",
+    "category": "concert",
+    "queries": ["live concert full", "full concert live music festival", "nhạc sống live concert"],
+    "title_keywords": [],
+    "trusted_channels": {}
+  },
+  "music_video": {
+    "series": "",
+    "category": "music_video",
+    "queries": ["official music video", "live session full album", "acoustic live session"],
+    "title_keywords": [],
+    "trusted_channels": {}
+  }
+}

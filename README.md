@@ -1,179 +1,286 @@
-# ImageRetrieval_TuanTai
+# Video Intelligence – Truy vấn đối tượng và khoảng thời gian xuất hiện trong video
+
+Đồ án môn **Phát triển ứng dụng trên nền tảng dữ liệu lớn**.
+
+Hệ thống cho phép tìm một đối tượng mà mô hình YOLO hỗ trợ (ví dụ `person`, `microphone`,
+`guitar`, …) trong một tập **video ca nhạc**. Kết quả trả về gồm: video nào có đối tượng, thời
+điểm bắt đầu và kết thúc mỗi lần xuất hiện, tổng thời lượng, độ tin cậy, và phát lại video tại
+thời điểm tìm được.
+
+**Phạm vi dữ liệu:** chỉ video ca nhạc, ưu tiên show **Anh Trai Vượt Ngàn Chông Gai**, các MV và
+concert khác vẫn được. Danh sách lớp đối tượng cụ thể sẽ do mô hình chọn ở Giai đoạn 4 quyết định
+(xem [PROJECT_ANALYSIS.md §11.3](PROJECT_ANALYSIS.md)), vì 80 lớp COCO không có micro hay nhạc cụ.
+
+| Video | Bắt đầu | Kết thúc |
+|---|---|---|
+| video_001 | 00:01:15 | 00:01:42 |
+| video_001 | 00:05:20 | 00:05:48 |
+
+> Bảng trên chỉ minh họa định dạng đầu ra, không phải kết quả đo được.
+
+## Tiến độ
+
+| Giai đoạn | Nội dung | Trạng thái |
+|---|---|---|
+| 1 | Phân tích project, môi trường ([PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md)) | ✅ Hoàn thành |
+| 2 | Dataset: cấu trúc, quét, kiểm tra, tải video CC BY, báo cáo | ✅ Hoàn thành |
+| 3 | Video processing: đọc theo luồng, lấy mẫu frame, timestamp theo PTS | ⏳ Chưa làm |
+| 4 | Nhận diện đối tượng bằng YOLO (nano, CPU) → Parquet | ⏳ |
+| 5 | Spark + HDFS: gom temporal segments, Spark SQL, benchmark | ⏳ |
+| 6 | Kafka + Spark Structured Streaming | ⏳ |
+| 7 | Giao diện Streamlit | ⏳ |
+| 8 | Kiểm thử tích hợp, benchmark, tài liệu triển khai | ⏳ |
+
+Kiến trúc mục tiêu:
+
+```text
+Video → kiểm tra → metadata → lấy mẫu frame → YOLO → detection events
+      → Kafka / Parquet → Spark → temporal segments → Parquet / HDFS → truy vấn → Streamlit
+```
+
+## Cấu trúc thư mục
+
+```text
+VideoRetrieval-TuanTai/
+├── config/
+│   ├── settings.py             # cấu hình tập trung (biến VI_* trong .env)
+│   └── music_presets.json      # preset tải video ca nhạc (atvncg, concert, music_video)
+├── src/
+│   ├── common/                 # ghi file atomic, sha256, CSV, logging
+│   ├── dataset/                # công cụ quản lý Dataset (giai đoạn 2)
+│   │   ├── create_dataset.py   # khởi tạo cấu trúc
+│   │   ├── scan_videos.py      # quét video, đo metadata, khai báo nguồn
+│   │   ├── validate_dataset.py # kiểm tra lỗi, trùng lặp, thời lượng, giấy phép
+│   │   ├── download_videos.py  # tải video YouTube giấy phép CC BY (yt-dlp)
+│   │   ├── dataset_report.py   # thống kê tổng quan
+│   │   └── schema.py           # cột metadata, 80 lớp COCO
+│   └── video_processing/
+│       └── video_probe.py      # metadata + đọc thử video (OpenCV + FFmpeg)
+├── dataset/                    # DỮ LIỆU – xem dataset/README.md
+├── tests/                      # pytest
+├── legacy/                     # project ImageRetrieval cũ (giữ để tham khảo)
+├── requirements.txt / requirements-dev.txt
+├── .env.example
+└── PROJECT_ANALYSIS.md
+```
+
+Các thư mục `app/`, `src/object_detection/`, `src/big_data/`, `src/streaming/`, `src/storage/`,
+`src/query/`, `scripts/`, `docker/` sẽ được tạo ở giai đoạn tương ứng. Tôi không tạo module rỗng
+trước.
 
 ## 1. Cài đặt
 
-Cần Python 3.11–3.12 và Node.js 22+. Chạy PowerShell tại thư mục repo:
+Yêu cầu: Windows 10/11, **Python 3.11**. FFmpeg **không cần cài riêng** vì gói `imageio-ffmpeg`
+đã kèm sẵn binary.
 
 ```powershell
-git clone https://github.com/UIT-Entropy/ImageRetrieval.git
-cd ImageRetrieval
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r source/image_retrieval/requirements-api.txt
-Copy-Item .env.example .env
-npm --prefix frontend ci
-npm --prefix frontend run build
-python source/image_retrieval/download_data.py
+py -3.11 -m venv .venv-vi
+.venv-vi\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env      # tùy chọn, các giá trị mặc định đã dùng được
 ```
 
-Lệnh tải data lấy bộ Castle5000 đã xử lý (5.000 ảnh, metadata, object/color và embedding) vào thư mục local. Không cần chạy lại indexing nếu dùng artifact public hiện có.
+Mọi lệnh bên dưới chạy **từ thư mục gốc repo** với `.venv-vi` đã kích hoạt.
 
-## 2. Chạy model trên GPU laptop
+> Dùng `.venv-vi` (Python 3.11) thay cho Python 3.14 mặc định của máy, vì torch và ultralytics
+> ở các giai đoạn sau cần phiên bản đã có wheel ổn định. `.venv` cũ chỉ dùng cho `legacy/`.
 
-Local dùng multi-index đã dựng ở mục 3.2; không nạp Qwen8B. Cài PyTorch CUDA phù hợp driver/GPU, sau đó:
+## 2. Dataset
+
+Chi tiết cấu trúc và các trường metadata nằm trong [dataset/README.md](dataset/README.md).
+
+**Yêu cầu:**
+- Chỉ video ca nhạc. Mỗi video có `category` thuộc `music_show` (show truyền hình, ví dụ ATVNCG),
+  `music_video` hoặc `concert`, cấu hình qua `VI_ALLOWED_CATEGORIES`.
+- Mỗi video dài ≥ 10 phút (mục tiêu 10–30 phút), 10–20 video, tổng 2–5 giờ.
+- Không dùng video giả, không lặp video ngắn.
+- Mỗi video phải ghi rõ nguồn, kênh đăng và giấy phép.
+
+MV đơn lẻ thường chỉ dài 3–5 phút nên bị loại. Với thể loại `music_video`, nên dùng live session
+hoặc bản tổng hợp dài ≥ 10 phút.
+
+### 2.1. Khởi tạo (làm được cả khi chưa có video)
 
 ```powershell
-python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -r source/image_retrieval/requirements-gpu.txt
+python -m src.dataset.create_dataset
 ```
 
-Trong `.env`, đặt `IMAGE_MULTI_INDEX` tới index local và giữ `IMAGE_LOCAL_MODEL_CACHE=2`. Qwen2B dùng NF4 4-bit; SigLIP2, EVA-CLIP và DFN-CLIP chạy FP16. Local chỉ cung cấp Qwen2B và các model nhỏ; Qwen8B chỉ có trong Kaggle profile.
+Lệnh này tạo cây thư mục `raw/`, `metadata/`, `processed/`, `annotations/`, `splits/`, file
+`dataset/README.md`, các CSV chỉ có header (không chứa dòng giả), `labels.csv` (80 lớp COCO) và
+`dataset_info.json`. Chạy lại nhiều lần không ghi đè dữ liệu có sẵn.
+
+### 2.2. Đưa video vào
+
+**Cách 1: tải video YouTube có giấy phép Creative Commons Attribution (CC BY)**
 
 ```powershell
-python source/image_retrieval/serve.py --profile local --smoke
-python source/image_retrieval/serve.py --profile local
+# Ưu tiên: Anh Trai Vượt Ngàn Chông Gai. Xem trước, không tải
+python -m src.dataset.download_videos --preset atvncg --max-results 20 --dry-run
+# Tải video đã chọn (preset vẫn kiểm tra kênh chính chủ và tiêu đề)
+python -m src.dataset.download_videos --preset atvncg --url "https://www.youtube.com/watch?v=VIDEO_ID"
+# Hoặc tự động tải N video đầu tiên đạt yêu cầu
+python -m src.dataset.download_videos --preset atvncg --limit 5
+
+# Concert / MV khác
+python -m src.dataset.download_videos --preset concert --max-results 10 --dry-run
+python -m src.dataset.download_videos --category concert --url "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-Mở **http://127.0.0.1:8100/images**. Backend giữ tối đa hai model trong VRAM và tự giải phóng model cũ nếu thiếu bộ nhớ; đổi model lần đầu có thể cần thời gian nạp. Nếu gặp CUDA OOM, đặt `IMAGE_LOCAL_MODEL_CACHE=1` rồi khởi động lại.
+Preset nằm trong [config/music_presets.json](config/music_presets.json). Preset `atvncg`:
+- chỉ nhận video từ kênh **YeaH1 Channel** (đơn vị sản xuất chương trình);
+- tiêu đề phải chứa "anh trai vượt ngàn chông gai", so khớp không dấu. Nhờ vậy các show khác cùng
+  kênh như "Gia Đình Haha" bị loại.
 
-## 3. Chạy API local, dùng GPU Kaggle
+Lý do lọc theo kênh: giấy phép CC BY chỉ có giá trị khi người đăng sở hữu nội dung, nên video do
+kênh khác đăng lại sẽ bị từ chối. Có thể thêm kênh tin cậy bằng `--trusted-channel CHANNEL_ID` và
+từ khóa bằng `--title-keyword`.
 
-API, SQLite/Qdrant và UI chạy local; model chạy trên Kaggle GPU. Cần Kaggle API token và quyền GPU. Chỉ dùng token của chính bạn: điền `KAGGLE_USERNAME` và `KAGGLE_API_TOKEN` trong `.env`. Không commit `.env`.
+Quy tắc của công cụ:
 
-### 3.1. Chọn cấu hình 2 hoặc 3 API
+- Đọc metadata trước khi tải. Video chỉ được tải khi trường `license` là **CC BY thuần**.
+  Giấy phép NC/SA/ND, "Standard YouTube License" hoặc thiếu thông tin đều bị **từ chối**.
+- Từ chối video ngắn hơn `VI_MIN_VIDEO_DURATION_SEC` (mặc định 10 phút) và video đang livestream.
+- `--search` dùng bộ lọc Creative Commons của YouTube, kết hợp bộ lọc độ dài qua `--length`:
+  `long` > 20 phút (mặc định), `medium` 4–20 phút, `any`. Giấy phép vẫn được kiểm tra lại cho
+  từng video.
+- Video được tải ở độ phân giải tối đa 720p (`--max-height`), ưu tiên H.264 để trình duyệt phát
+  được, lưu với tên `raw/videos/yt_<id>.mp4`.
+- URL, tiêu đề, kênh (`channel_id`), giấy phép, `category` và `series` được ghi vào
+  `metadata/sources.csv`. CC BY yêu cầu ghi công tác giả khi sử dụng.
+- Bài hát trong video còn có quyền tác giả âm nhạc riêng. Chỉ dùng cho phân tích học thuật,
+  **không phân phối lại file video**.
+- File `metadata/download_archive.txt` giúp chạy lại không tải trùng, và tiếp tục được khi bị ngắt.
 
-- **2 API:** slot 1 chạy Qwen3-VL 8B embedding + reranker; slot 2 chạy Qwen3-VL 2B embedding + reranker và SigLIP2, EVA-CLIP, DFN-CLIP.
-- **3 API:** slot 1 chạy Qwen3-VL 8B; slot 2 chạy Qwen3-VL 2B embedding + reranker; slot 3 chạy SigLIP2, EVA-CLIP, DFN-CLIP.
-
-Có thể dùng cùng một tài khoản Kaggle cho nhiều notebook. Slot 1 dùng `KAGGLE_USERNAME`/`KAGGLE_API_TOKEN`; slot 2 và 3 mặc định dùng chung credential này. Nếu cần tách tài khoản, điền thêm `KAGGLE_USERNAME_2`/`KAGGLE_API_TOKEN_2` hoặc `_3`. Notebook private bật Internet và GPU T4; lệnh push tạo notebook mới trong tài khoản tương ứng.
-
-### 3.2. Tạo index cho các embedding model
-
-Chỉ cần làm một lần, hoặc làm lại khi đổi bộ ảnh/model. Index được tạo từ dataset Castle5000, không cần tải ảnh lên từng notebook:
+**Cách 2: video tự cung cấp.** Chép file vào `dataset/raw/videos/`, rồi khai báo nguồn bằng lệnh
+(không cần sửa CSV bằng tay):
 
 ```powershell
-python source/image_retrieval/manage_workers.py push --index --slot 1
+python -m src.dataset.scan_videos --register-source my_video.mp4 --source user `
+    --license "..." --category concert --series "..." --title "..."
 ```
 
-Đợi notebook Kaggle hoàn tất. Lấy `owner/notebook-slug` từ link được in ra rồi tải output và dựng index local:
+**Gỡ video khỏi dataset** (ví dụ video ngoài domain):
 
 ```powershell
-kaggle kernels output owner/notebook-slug -p source/image_retrieval/output/multi-embeddings
-python source/image_retrieval/build_index.py --artifacts source/image_retrieval/output/image_retrieval_output --embeddings source/image_retrieval/output/multi-embeddings/embeddings --output source/image_retrieval/output/multi-index
+python -m src.dataset.scan_videos --remove video_005                # file chuyển vào raw/removed/
+python -m src.dataset.scan_videos --remove video_005 --delete-file  # xóa hẳn file
 ```
 
-Nếu notebook embedding đã chạy trước đó, bỏ qua bước này. Nếu cần tiếp tục từ output checkpoint, truyền `--resume owner/notebook-slug` vào lệnh `push --index`.
-
-Trong `.env`, trỏ `IMAGE_MULTI_INDEX` đến index vừa tạo, ví dụ:
-
-```dotenv
-IMAGE_MULTI_INDEX=source/image_retrieval/output/multi-index
-```
-
-### 3.3. Push và kết nối worker
-
-Chọn **một** topology, đặt `IMAGE_GPU_WORKERS` trong `.env` bằng 2 hoặc 3, rồi chạy đúng số slot:
+### 2.3. Quét, kiểm tra, báo cáo
 
 ```powershell
-$workerCount = 2 # đổi thành 3 nếu dùng topology 3 API
-1..$workerCount | ForEach-Object {
-    python source/image_retrieval/manage_workers.py push --workers $workerCount --slot $_
-}
-1..$workerCount | ForEach-Object {
-    python source/image_retrieval/manage_workers.py connect --workers $workerCount --slot $_
-}
+python -m src.dataset.scan_videos         # đo metadata, sha256, gán video_id, chia split
+python -m src.dataset.validate_dataset    # exit code 1 nếu có lỗi
+python -m src.dataset.dataset_report      # in thống kê + ghi metadata/dataset_report.md
 ```
 
-`connect` đợi worker khởi động, kiểm tra model rồi lưu kết nối cục bộ. Khi notebook/tunnel hết hạn, chạy lại `push` và `connect` cho slot đó.
+`scan_videos` hoạt động như sau:
 
-### 3.4. Mở web và chọn model
+- Chạy tăng dần: file không đổi (cùng dung lượng và mtime) thì không băm lại.
+- `videos.csv` được ghi sau mỗi video, nên có thể tiếp tục khi bị ngắt.
+- `video_id` (`video_001`, …) được gán một lần và không đổi.
+- Split train/validation/test (70/15/15): video được xếp theo hash `video_id` rồi cắt theo tỷ lệ.
+  Kết quả cố định giữa các lần chạy, và validation/test luôn có ít nhất 1 video khi có ≥ 3 video.
+
+`validate_dataset` phát hiện các trường hợp sau:
+
+| Mã | Mức | Ý nghĩa |
+|---|---|---|
+| `unreadable` / `corrupt` | lỗi | Không mở được, file rỗng, không giải mã được frame đầu/giữa/cuối |
+| `duplicate_content` | lỗi | Trùng nội dung (sha256) với video khác |
+| `duplicate_id` | lỗi | Trùng `video_id` hoặc `filepath` |
+| `missing_file` | lỗi | Sai đường dẫn hoặc file đã bị xóa/di chuyển |
+| `missing_metadata` / `missing_metadata_columns` | lỗi | Thiếu trường hoặc giá trị không hợp lệ (FPS = 0, …) |
+| `unregistered_file` | lỗi | Video có trên đĩa nhưng chưa có metadata |
+| `metadata_stale` | lỗi | File đã thay đổi so với metadata, cần chạy lại scan |
+| `too_short` | cảnh báo | Ngắn hơn ngưỡng thời lượng |
+| `missing_license` | cảnh báo | Chưa khai báo giấy phép |
+| `out_of_domain` | cảnh báo | `category` không phải video ca nhạc (hoặc chưa khai báo) |
+| `probe_warning` | cảnh báo | Thời lượng OpenCV lệch container (có thể là VFR) |
+
+`--strict` coi cảnh báo là lỗi. `--quick` bỏ bước giải mã thử frame. Video có lỗi được chuyển
+`processing_status = invalid`, còn lại được chuyển thành `validated`.
+
+### 2.4. Hiện trạng Dataset
+
+Đã đạt mục tiêu tối thiểu: **10 video, 5,38 giờ** (05:22:30), dung lượng 3,1 GB. Tất cả đều có
+giấy phép CC BY và đạt `validate_dataset --strict` (0 lỗi, 0 cảnh báo). Thành phần: 8 video
+`music_show` – Anh Trai Vượt Ngàn Chông Gai (kênh YeaH1) và 2 video `concert`.
+Split train/validation/test là 6/2/2.
+
+| video_id | Tiêu đề (kênh) | Thời lượng | Độ phân giải | FPS | Thể loại |
+|---|---|---|---|---|---|
+| video_001 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc tập luyện Đào Liễu](https://www.youtube.com/watch?v=7cM6_ZONDGM) (YeaH1 Channel) | 00:24:12 | 1280×720 | 29.97 | music_show |
+| video_002 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Khoảnh khắc tập luyện siêu ồn của Nhà Hát và cái kết](https://www.youtube.com/watch?v=adToS1DJd74) (YeaH1 Channel) | 00:25:41 | 1280×720 | 29.97 | music_show |
+| video_003 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc tập luyện Dạ Cổ của Nhà Mứt Gừng](https://www.youtube.com/watch?v=e20m2bjeh1U) (YeaH1 Channel) | 00:23:31 | 1280×720 | 29.97 | music_show |
+| video_004 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc tập luyện Chiếc Khắn Piêu của Nhà Cá Lớn](https://www.youtube.com/watch?v=ektRXdwR_vI) (YeaH1 Channel) | 00:23:55 | 1280×720 | 29.97 | music_show |
+| video_005 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Nhìn lại các màn tập luyện cực nhiệt huyết của các Anh Tài](https://www.youtube.com/watch?v=tjqs7-iQ7Ko) (YeaH1 Channel) | 00:28:08 | 1280×720 | 29.97 | music_show |
+| video_006 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Tổng hợp khoảnh khắc cực căng tại vòng song ca ở Công Diễn 4](https://www.youtube.com/watch?v=W6vvT3sfkzA) (YeaH1 Channel) | 00:43:50 | 1280×720 | 29.97 | music_show |
+| video_007 | [ANH TRAI VƯỢT NGÀN CHÔNG GAI – Đằng sau tiết mục cực cháy của Nhà Ngũ Hành là cái giá cần phải trả](https://www.youtube.com/watch?v=WAg2mTtHbYE) (YeaH1 Channel) | 00:31:07 | 1280×720 | 29.97 | music_show |
+| video_008 | [[FULL FOCUS CAM] NHÀ TRẺ - TỔNG HỢP TIẾT MỤC CÔNG DIỄN 4 I ANH TRAI VƯỢT NGÀN CHÔNG GAI 2024](https://www.youtube.com/watch?v=X1V-tMufAPA) (YeaH1 Channel) | 00:28:27 | 360×640 | 30.00 | music_show |
+| video_009 | [Ausomapto live [Full concert]](https://www.youtube.com/watch?v=HMhyzt0xoGs) (Ausomapto) | 00:43:39 | 1280×720 | 29.97 | concert |
+| video_010 | [Liveshow Hà Nội và em khi thu chớm đông sang (P1) - Phú Quang](https://www.youtube.com/watch?v=nFl49167ac4) (Phú Quang) | 00:49:59 | 854×480 | 25.00 | concert |
+
+Ghi chú:
+- `video_008` là video quay dọc (focus cam, 360×640).
+- Hai video concert được chọn vì tên kênh trùng với nghệ sĩ. Quyền sở hữu chưa được xác minh độc lập.
+- Video walking tour tải ở lần thử trước nằm ngoài domain ca nhạc, đã được gỡ và chuyển vào
+  `dataset/raw/removed/`. Có thể xóa hẳn thư mục này.
+
+Tình trạng mới nhất nằm trong `dataset/metadata/dataset_report.md`. File video không được commit
+(`.gitignore`), chỉ metadata được commit. Muốn khôi phục video, chạy lại `download_videos --url` với
+URL trong `sources.csv`.
+
+## 3. Kiểm thử
 
 ```powershell
-npm --prefix frontend run build
-python -m source.image_retrieval --profile multi
+python -m pytest
 ```
 
-Mở **http://127.0.0.1:8100/images**. Sau khi mở web hoặc reconnect worker, chạy thử mỗi model định dùng khoảng 2–3 lượt để làm ấm kết nối. Lượt đầu có thể chậm do worker/tunnel vừa khởi động; các lượt lặp cùng model và query sẽ nhanh hơn nhờ cache embedding local. Ctrl+S mở tùy chọn model tìm kiếm, ensemble, số kết quả Top K và reranker K. Khi đổi từ 2 sang 3 API (hoặc ngược lại), cập nhật `IMAGE_GPU_WORKERS`, kết nối đủ slot rồi khởi động lại backend.
+Có 39 test, không cần mạng và không cần video thật. Video vài giây dùng trong test được sinh tạm
+bằng OpenCV trong thư mục tạm của pytest, **không** ghi vào `dataset/` và không dùng để báo cáo
+kết quả. Phạm vi test:
 
-Đo p50, p95 và Recall@20 trên bộ query gán nhãn bằng:
+- Dataset rỗng.
+- Video hợp lệ và metadata.
+- Video quá ngắn (cảnh báo, thành lỗi khi `--strict`).
+- File hỏng, file rỗng, file bị cắt cụt.
+- Trùng lặp.
+- Sai đường dẫn.
+- Video chưa đăng ký.
+- Thiếu trường hoặc cột metadata.
+- Metadata cũ.
+- Quét tăng dần.
+- Khai báo nguồn.
+- Split.
+- Báo cáo.
+- Phân loại giấy phép (CC BY, NC, SA, Standard).
+- Kênh chính chủ và từ khóa tiêu đề không dấu (preset `atvncg`).
+- Domain ca nhạc (`out_of_domain`).
+- Gỡ video.
+- Dry-run.
+- Lỗi mạng khi đọc metadata.
 
-```powershell
-python source/image_retrieval/benchmark_search.py queries.json
-```
+## 4. Môi trường đã kiểm tra
 
-Mỗi mục trong file JSON có `query` và danh sách `image_ids` đúng nếu đã gán nhãn. Lưu ý: với Kaggle, thời gian encode một query warm thường dưới một giây; độ trễ còn dao động theo tunnel. Ensemble gửi yêu cầu đồng thời, nhưng các model đặt chung một GPU sẽ lần lượt dùng GPU đó.
+| Thành phần | Phiên bản trên máy | Dùng ở giai đoạn |
+|---|---|---|
+| Python (`.venv-vi`) | 3.11.9 | tất cả |
+| OpenCV (headless) | 5.1.0 | 2–4 |
+| FFmpeg (imageio-ffmpeg) | 9.0.2 | 2–3 |
+| yt-dlp | 2026.10.26 | 2 |
+| Java | 17.0.20.1 | 5–6 |
+| Apache Spark | 4.2.0 (`SPARK_HOME`), đã chạy thử Parquet | 5–6 |
+| Apache Hadoop | 3.4.0 (`HADOOP_HOME`, có winutils) | 5 |
+| Apache Kafka | 4.3.1 (KRaft) | 6 |
+| Docker | 29.9.3 (dự phòng cho HDFS/Kafka) | 5–6 |
 
-## 4. Gắn Codex cho chat
+Rủi ro và kế hoạch chi tiết xem trong [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md).
 
-```powershell
-npm install -g @openai/codex
-codex login
-codex login status
-```
+## 5. Legacy
 
-Đăng nhập ChatGPT có quyền dùng `gpt-6-luna`. Backend tự dùng Codex CLI khi gửi chat; không cần OpenAI API key. Nếu CLI không nằm trên PATH, điền `CODEX_QUERY_EXECUTABLE` trong `.env` và khởi động lại API.
-
-
-## 5. Tìm ảnh với nhiều model trên Kaggle
-
-Dùng Python 3.11 hoặc 3.12. Cài lại requirements API sau khi pull để có Qdrant.
-Trong `.env`, đặt `IMAGE_GPU_WORKERS=2` hoặc `3`, điền `KAGGLE_USERNAME` và `KAGGLE_API_TOKEN`. Các slot bổ sung dùng credential này mặc định; có thể đặt thêm các biến hậu tố `_2` và `_3` để dùng tài khoản khác.
-
-Chạy job nhúng lại ảnh trước khi chạy các worker phục vụ tìm kiếm.
-
-```powershell
-python source/image_retrieval/manage_workers.py push --index --slot 1
-```
-
-Notebook dùng bộ Castle5000 và xuất thư mục `embeddings` sau khi nhúng đủ năm model.
-Xem slug trong đầu ra lệnh push, rồi tải output notebook vào một thư mục local.
-Nếu đã có output checkpoint, thêm `--resume owner/notebook-slug` khi gửi job mới.
-
-```powershell
-kaggle kernels output owner/notebook-slug -p source/image_retrieval/output/multi-embeddings
-python source/image_retrieval/build_index.py --artifacts source/image_retrieval/output/image_retrieval_output --embeddings source/image_retrieval/output/multi-embeddings/embeddings --output source/image_retrieval/output/multi-index
-```
-
-Đặt `IMAGE_MULTI_INDEX=source/image_retrieval/output/multi-index` trong `.env`.
-SQLite và Qdrant chạy local qua API, với index được chọn lúc backend khởi động.
-Khởi động lại backend sau khi tạo bản index mới. Muốn quay lại luồng cũ, bỏ biến này và dùng profile cũ.
-
-```powershell
-$workerCount = 2
-foreach ($slot in 1..$workerCount) {
-    python source/image_retrieval/manage_workers.py push --workers $workerCount --slot $slot
-}
-foreach ($slot in 1..$workerCount) {
-    python source/image_retrieval/manage_workers.py connect --workers $workerCount --slot $slot
-}
-npm --prefix frontend run build
-python -m source.image_retrieval --profile multi
-```
-
-Nếu dùng ba API, đặt cả `$workerCount` và `IMAGE_GPU_WORKERS` thành `3` trước khi chạy. Khởi động lại backend khi đổi số API. Trong app, nhấn Ctrl+S để chọn Model tìm kiếm, Ensemble và Reranker.
-Khi tunnel hết hạn, chạy lại push và connect cho slot đó. Backend đọc kết nối mới ở query tiếp theo.
-
-Đo p50, p95 và Recall@20 bằng `python source/image_retrieval/benchmark_search.py queries.json`.
-Dùng cùng 20 query cho hai cấu hình. Mỗi mục có `query` chứa điều kiện tìm ảnh và
-`image_ids` chứa danh sách ảnh đúng nếu đã gán nhãn. Log khởi động của mỗi worker ghi thời gian warm-up và peak VRAM theo GPU.
-
-## Cú pháp tìm nhanh cho team
-
-Nhấn **Ctrl+A** để mở trợ lý. Ngăn các điều kiện bằng dấu phẩy, chấm phẩy hoặc xuống dòng.
-
-| Cú pháp | Bộ lọc |
-| --- | --- |
-| `2 người` hoặc `đúng 2 người` | Đúng hai người |
-| `ít nhất 2 người`, `tối đa 3 người` | Từ hai người hoặc tối đa ba người |
-| `hơn 2 người`, `dưới 3 người` | So sánh nghiêm ngặt, lần lượt từ ba người và tối đa hai người |
-| `thêm áo đỏ`, `2 chai xanh dương` | Màu gắn với chính object được đếm |
-| `không có chai` | Số chai phát hiện bằng 0 |
-| `ngày 1`, `day1` | Lọc ngày nếu ngày đó có trong dữ liệu |
-| `lúc 9h`, `từ 8h đến 10h`, `8h-10h` | Lọc theo giờ, gồm cả hai đầu mốc |
-| `bỏ màu`, `bỏ giờ`, `bỏ ngày` | Xóa nhóm điều kiện tương ứng |
-
-Ví dụ có thể copy: **đúng 2 người, thêm áo đỏ, ngày 1, từ 8h đến 10h**.
-Bộ lọc nhanh dùng số đếm detection và giữ các điều kiện hiện tại ngoài phần vừa sửa.
-Có thể dùng tên nhãn tiếng Anh trong bộ lọc hoặc alias tiếng Việt. Màu xanh
-nên ghi rõ **xanh lá** hoặc **xanh dương**. Các câu mô tả hành động, câu có điều kiện
-ngoài cú pháp hoặc cần số đếm metadata gốc được chuyển nguyên câu sang Luna.
+Project ImageRetrieval cũ (truy vấn ảnh Castle5000: Qwen3-VL, GroundingDINO, SAM2, FastAPI,
+React) đã được chuyển nguyên vẹn vào [legacy/](legacy/). Lịch sử git vẫn được giữ, và 32 test cũ
+vẫn đạt sau khi di chuyển. Xem [legacy/README.md](legacy/README.md). File `.env` cũ, chứa token
+Kaggle, nằm tại `legacy/.env` và không được commit.
