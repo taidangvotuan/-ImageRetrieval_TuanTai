@@ -429,3 +429,97 @@ Streamlit ← đọc Parquet bằng pyarrow (không mở Spark mỗi truy vấn)
 Đánh giá (Giai đoạn 8): gán nhãn tay các MV split test theo `annotation_guide.md`; P/R/F1 mức
 giây và mức khoảng (tIoU ≥ 0,5), sai số |Δstart|, |Δend|.
 
+
+---
+
+## 13. Tiêu chí Dataset tập trung và xác minh (2026-11-25)
+
+### 13.1. Quyết định đã chốt
+
+| # | Nội dung | Quyết định |
+|---|---|---|
+| X1 | Thời lượng | Luật cứng 150–420 s (2:30–7:00) → ngoài khoảng là `rejected`; 3–5 phút chỉ là khoảng mục tiêu để thống kê |
+| X2 | Nghĩa trạng thái | `confirmed` = đã xác minh video ĐẠT tiêu chí; luật tự động chỉ ghi `rejected` |
+| X3 | Duyệt tay | Bắt buộc; không video nào tự `accepted`. Người duyệt ghi qua `--reviewer` (bắt buộc), lưu vào `reviewed_by` |
+| X4 | Độ phân giải / định dạng | < 720p → `rejected`; ≥ 720p đều đạt; không phải MP4 → `rejected`, không tự chuyển đổi |
+| X5 | Trùng lặp | Bản sau → `rejected: duplicate_*`, liệt kê trong báo cáo "cần xử lý", không xóa file |
+| X6 | `dataset/validation/` | 3 file CSV danh sách, không di chuyển video |
+| X7 | AI trong tiêu đề | Luật khoảng cách "AI … music video" là strong; tên công cụ AI là weak |
+| X8 | Phạm vi | Làm cổng kiểm soát + hợp đồng ngay; test tích hợp Spark/Kafka/Streamlit viết khi xây module (GĐ5–7) |
+
+### 13.2. Thay đổi
+
+| Nhóm | File |
+|---|---|
+| Tiêu chí | **Mới** `config/dataset_criteria.json` (nguồn duy nhất); `config/settings.py` đọc ngưỡng từ file này; `config/music_presets.json` chỉ còn truy vấn |
+| Validation | **Mới** `src/dataset/validation/` – `exclusion_rules`, `video_filter`, `metadata_validator`, `review_store`, `dataset_validator`, `accepted_registry` |
+| Schema | `schema.py` v2: thêm `source_url`, `content_type`, 5 trường trạng thái, `validation_status`, `rejection_reason`, `verification_notes`, `reviewed_by/at`, `probe_ok`; `processing_status` tách khỏi trạng thái hợp lệ; `REVIEW_COLUMNS`, `REJECTION_REASONS` |
+| Migration | **Mới** `migrate_metadata.py` – sao lưu, idempotent, không sinh `confirmed`; scan / validate / create tự gọi |
+| CLI | **Mới** `review_video.py`; `validate_dataset.py` thành vỏ CLI; `scan_videos.py` chỉ đo đạc, không tự ghi `license_verified=yes`, lưu `source_info`; `download_videos.py` dùng luật chung, `screen_result`, lưu mô tả/tags; `dataset_report.py` xuất JSON/CSV/MD trong `dataset/reports/` |
+| Tài liệu | **Mới** `docs/DATASET_CRITERIA.md`; README, `dataset/README.md`, `.env.example` |
+| Test | 198 test (trước 54): `test_exclusion_rules`, `test_dataset_validator`, `test_integration_dataset`, `test_migration` mới |
+
+### 13.3. Vấn đề phát hiện trong quá trình làm
+
+| Vấn đề | Xử lý |
+|---|---|
+| Luật khớp xuyên dấu ngoặc ("Song (Official MV) BTS" → "mv bts") | Giữ ranh giới đoạn khi chuẩn hóa; cụm từ và luật khoảng cách không vượt ranh giới |
+| "ai" là từ tiếng Việt ("Ai Biết", "Người Ấy Là Ai", "Tình Ái") → luật AI loại nhầm | Luật AI dạng mạnh chỉ áp dụng khi viết đúng "AI" in hoa và tiêu đề không viết hoa toàn bộ; còn lại là weak |
+| Chế độ `--quick` bỏ qua video hỏng giữa file → có thể lên `accepted` | Cột `probe_ok` lưu kết quả đọc thử; video chưa đọc thử không thể `accepted` |
+| Bản gốc bị xóa nhưng bản sao vẫn bị coi là trùng | So trùng chỉ xét video còn file trên đĩa |
+| `.env` cục bộ (`VI_MAX_VIDEO_DURATION_SEC=330`) ghi đè tiêu chí mới | Sao lưu `.env.bak-20261125`, comment các dòng ngưỡng; test truyền ngưỡng tường minh |
+
+### 13.4. Giới hạn còn lại
+
+- Lọc từ khóa không phát hiện được video AI hay reup khi tiêu đề trông như MV thật (ví dụ "KIRA – Tribute" được bắt nhờ chữ "tribute", nhưng "Ram Jam – Black Betty" từ kênh reup thì không). Đây là lý do duyệt tay là bắt buộc.
+- Trùng lặp chỉ phát hiện được bản sao giống hệt (sha256), cùng tên file hoặc cùng nguồn. Cùng một MV mã hóa khác nhau chưa phát hiện được; có thể mở rộng bằng perceptual hash trên frame sau khi có frame extraction (GĐ3).
+- Các module GĐ3–7 chưa tồn tại; hợp đồng cổng (`accepted_registry`) là tiêu chí nghiệm thu khi xây chúng.
+
+---
+
+## 14. Kiểm duyệt an toàn nội dung – M1 (2026-11-25)
+
+### 14.1. Quyết định đã chốt
+
+| # | Nội dung | Quyết định |
+|---|---|---|
+| 1 | Đọc video trước khi accepted | Bước kiểm duyệt được đọc video `pending_review`, kết quả chỉ ghi vào `dataset/moderation/`; pipeline chính thức vẫn chỉ nhận `accepted` |
+| 2 | Tự động loại | Chỉ với từ không mơ hồ trong tiêu đề/tags/tên file (và OCR từ M2), giới hạn tuổi 18+, và kết luận của người duyệt. STT và mô hình hình ảnh chỉ gắn cờ cho tới khi hiệu chỉnh (M5) |
+| 3 | Giới hạn tuổi 18+ | `rejected: age_restricted` (đổi được thành chỉ gắn cờ trong cấu hình) |
+| 4 | `content_safety_status = safe` | Chỉ do người duyệt ghi, sau khi xem toàn video |
+| 5 | Thư viện nặng | Đồng ý cho M2–M4; M1 chỉ dùng `lingua-language-detector` |
+| 6 | API kiểm duyệt bên ngoài | Không dùng mặc định |
+| 7 | Lexicon | M1 chỉ dựng định dạng + công cụ; **chưa có lexicon nào** – chờ nhóm quyết định nguồn |
+| 8 | Thứ tự | M1 xong; M2–M4 lần lượt, mỗi giai đoạn chờ xác nhận |
+
+### 14.2. Thay đổi M1
+
+| Nhóm | File |
+|---|---|
+| Cấu hình | `dataset_criteria.json` mục `content_safety` (nhóm, phạm vi, chính sách tự loại, ngưỡng ngôn ngữ, khử biến thể); `config/moderation/` (README, `_TEMPLATE.csv`) |
+| Code mới | `src/dataset/validation/content_safety/`: `text_variants`, `language`, `lexicon`, `providers`, `text_moderator`, `aggregator`, `__init__` (điều phối + lưu kết quả) |
+| Code sửa | `schema.py` v3 (16 trường mới, mã lý do mới); `dataset_validator.py`; `review_store.py` / `review_video.py` (`--content-safety`, `--safety-categories`); `download_videos.py` (giới hạn tuổi, sàng lọc lexicon, lưu `age_limit`); `dataset_report.py`; `settings.py` (`lexicon_dir`, `paths.moderation`) |
+| Dữ liệu | Migration v2 → v3 (sao lưu `dataset/metadata/backups/…_v2`) |
+| Test | 255 test (trước 198): `test_content_safety.py`, `test_content_safety_integration.py` |
+
+### 14.3. Phát hiện
+
+- 3 URL "lỗi" trong lần dry-run trước đều do **YouTube giới hạn độ tuổi**. Bây giờ chúng được ghi là `reject: age_restricted`, không còn là lỗi mạng.
+- `lingua` không đáng tin với tiêu đề ngắn hoặc trộn ngôn ngữ (Hàn + Anh ra Swahili 0,12) → dùng ngưỡng và trả `unknown` thay vì đoán.
+- Cùng một chuỗi có thể tục ở ngôn ngữ này nhưng trung tính ở ngôn ngữ khác → từ `strong` chỉ tự loại khi ngôn ngữ của trường khớp ngôn ngữ của lexicon.
+
+---
+
+## 15. Lexicon nháp + kiểm duyệt M2 (2026-11-25)
+
+- **Lexicon nháp** (`config/moderation/lexicons/drafts/`, không được nạp): tiếng Việt 57 mục và tiếng Anh 55 mục, trong đó chỉ 12 mục `strong`, còn lại `ambiguous`. Chờ nhóm duyệt rồi chép ra `lexicons/`.
+- **Phát hiện:** khi bỏ dấu, các từ tục tiếng Việt ngắn trùng với từ thường ("lồn", "lớn" và "lon bia" đều thành `lon`; "cặc" và "các" thành `cac`; "đĩ" và "đi" thành `di`). Vì vậy lexicon có thêm cột `match=exact` (giữ dấu). Đã kiểm tra: câu thường không bị gắn cờ; trên 99 tiêu đề ứng viên chỉ 1 bị gắn cờ `ambiguous`.
+- **M2:**
+  - `frame_sampler.py`: đọc tuần tự, timestamp theo PTS, dùng chung cho GĐ3.
+  - Phụ đề YouTube: chỉ phụ đề gốc, chỉ gắn cờ.
+  - OCR bằng EasyOCR (vi, en): tự loại khi từ `strong` cùng ngôn ngữ xuất hiện ở ≥ 2 frame.
+  - CLI `moderate_videos` có checkpoint.
+  - Sửa lỗi `parse_vtt` xóa nhầm câu điệp khúc lặp lại.
+- **Đo thật:** OCR mất 2,4 s mỗi frame trên CPU, tức khoảng 4–5 phút cho một MV 4 phút; RAM khoảng 0,9 GB. Trên video quay thật có chữ cách điệu, 71/97 hộp chữ không đọc được → `unknown`.
+- **Dependency:** `requirements-moderation.txt` (torch 2.15.0+cpu, torchvision, easyocr 1.7.2). OpenCV 5.1 không bị thay đổi.
+- **Test:** 276 (trước 255).

@@ -1,5 +1,5 @@
 {
-  "_comment": "Preset tìm/tải Music Video giấy phép CC BY. queries chỉ thu hẹp kết quả tìm kiếm; giấy phép, thời lượng (150–330 s) và exclude_keywords luôn được kiểm tra lại cho từng video. trusted_channels rỗng = mọi kênh, nên BẮT BUỘC duyệt tay download_candidates.csv (kênh có phải của nghệ sĩ/hãng không) trước khi tải. exclude_keywords so khớp theo từ, không dấu, không phân biệt hoa thường.",
+  "_comment": "Preset TÌM KIẾM MV giấy phép CC BY. Chỉ chứa truy vấn và giới hạn kênh; tiêu chí loại trừ (AI, hậu trường, lyrics, …) và thời lượng nằm DUY NHẤT trong config/dataset_criteria.json. trusted_channels rỗng = mọi kênh -> mọi video tải về đều phải được duyệt nguồn gốc (review_video).",
   "music_video": {
     "series": "",
     "category": "music_video",
@@ -10,12 +10,6 @@
       "MV official"
     ],
     "title_keywords": [],
-    "exclude_keywords": [
-      "lyric", "lyrics", "lyric video", "karaoke", "official audio", "audio", "visualizer",
-      "visualiser", "1 hour", "10 hours", "loop", "compilation", "full album", "playlist",
-      "reaction", "tutorial", "nightcore", "slowed", "reverb", "8d", "sped up", "teaser",
-      "trailer", "behind the scenes", "making of", "shorts", "remix contest", "fancam"
-    ],
     "trusted_channels": {}
   }
 }

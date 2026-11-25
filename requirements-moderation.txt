@@ -1,0 +1,8 @@
+# Kiểm duyệt nội dung bước nặng (M2: OCR). Tách riêng để bộ công cụ Dataset cơ bản vẫn nhẹ.
+#   python -m pip install -r requirements-moderation.txt
+# torch bản CPU (tránh bản CUDA ~2,5 GB). Mô hình EasyOCR (~100 MB) tự tải về ~/.EasyOCR ở lần chạy đầu.
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+torch==2.15.0+cpu
+torchvision==0.29.2+cpu
+easyocr==1.7.2

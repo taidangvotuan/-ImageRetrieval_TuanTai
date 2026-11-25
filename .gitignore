@@ -28,6 +28,12 @@ dataset/raw/videos/*
 !dataset/raw/videos/.gitkeep
 dataset/raw/removed/
 dataset/metadata/download_candidates.csv
+# Bản sao lưu cục bộ trước migration (lịch sử đầy đủ đã có trong git)
+dataset/metadata/backups/
+# Phiếu duyệt đang điền dở (quyết định chính thức nằm trong metadata/reviews.csv – được commit)
+dataset/validation/review_sheet.csv
+# Kết quả kiểm duyệt (transcript / OCR có thể chứa lời bài hát có bản quyền)
+dataset/moderation/
 archive/
 dataset/processed/**/*
 !dataset/processed/**/

@@ -1,0 +1,17 @@
+{
+  "validated_at": "2026-11-25T01:59:45+00:00",
+  "mode": "quick",
+  "total_videos": 0,
+  "accepted": 0,
+  "rejected": 0,
+  "pending_review": 0,
+  "dataset_issues": [],
+  "duplicates": [],
+  "videos": [],
+  "ok": true,
+  "lists": {
+    "accepted": 0,
+    "rejected": 0,
+    "pending_review": 0
+  }
+}

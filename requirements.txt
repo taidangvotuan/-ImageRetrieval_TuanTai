@@ -12,3 +12,6 @@ pandas==2.3.3                # ghim 2.3.x: tương thích PySpark 4.2.0 (giai đ
 pyarrow==26.0.1
 python-dotenv==1.2.4
 psutil==7.2.2
+
+# --- Kiểm duyệt an toàn nội dung (M1): nhận diện ngôn ngữ, offline
+lingua-language-detector==2.1.1

@@ -4,9 +4,11 @@
   không băm lại -> chạy lại nhanh, tiếp tục được nếu bị ngắt (CSV được ghi
   atomic sau mỗi video).
 * ``video_id`` (MV_001, ...) được gán một lần và không đổi khi chạy lại.
-* Đánh dấu video trùng nội dung (sha256), không đọc được, file đã biến mất.
-* Nguồn/giấy phép lấy từ ``metadata/sources.csv``; khai báo bằng
-  ``--register-source`` thay vì sửa CSV bằng tay.
+* Scan CHỈ đo đạc. Quyết định accepted / rejected / pending_review do
+  ``validate_dataset`` (``src/dataset/validation``) đưa ra theo tiêu chí tập trung; video mới
+  luôn bắt đầu ở ``pending_review``.
+* Nguồn/giấy phép lấy từ ``metadata/sources.csv``; khai báo bằng ``--register-source`` thay vì
+  sửa CSV bằng tay. Khai báo nguồn KHÔNG phải là xác minh (xác minh: ``review_video``).
 
     python -m src.dataset.scan_videos
     python -m src.dataset.scan_videos --force            # đo lại toàn bộ
@@ -23,10 +25,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import Settings, get_settings
-from src.common.io_utils import read_csv, sha256_file, write_csv
+from src.common.io_utils import atomic_json, read_csv, sha256_file, write_csv
 from src.common.logging_utils import ensure_utf8_stdio, setup_logging
 from src.dataset.create_dataset import create_dataset, write_dataset_info
-from src.dataset.schema import ARCHIVE_COLUMNS, SOURCE_COLUMNS, SPLIT_COLUMNS, VIDEO_COLUMNS
+from src.dataset.schema import (ARCHIVE_COLUMNS, SOURCE_COLUMNS, SPLIT_COLUMNS, VIDEO_COLUMNS,
+                                normalize_video_row)
 from src.video_processing.video_probe import probe_video
 
 logger = logging.getLogger(__name__)
@@ -72,10 +75,13 @@ def _measure(path: Path, rel: str, row: dict) -> dict:
         "height": probe.height,
         "codec": probe.codec,
         "scanned_at": _now(),
-        "processing_status": "pending" if probe.readable else "invalid",
+        "probe_ok": "yes" if probe.readable else "no",
         "notes": "; ".join(probe.errors + probe.warnings),
     })
-    return row
+    # File mới / đã thay đổi: mọi kết luận cũ hết hiệu lực -> validator tính lại.
+    row["validation_status"] = "pending_review"
+    row.setdefault("processing_status", "not_started")
+    return normalize_video_row(row)
 
 
 def assign_splits(video_ids: list[str], ratios: tuple[float, float, float]) -> dict[str, str]:
@@ -97,8 +103,9 @@ def assign_splits(video_ids: list[str], ratios: tuple[float, float, float]) -> d
 
 
 def write_splits(settings: Settings, rows: list[dict]) -> dict[str, int]:
+    """Split chỉ gồm video accepted (đánh giá / chỉnh tham số trên dữ liệu đã xác minh)."""
     groups: dict[str, list[dict]] = {"train": [], "validation": [], "test": []}
-    valid = [r for r in rows if r.get("processing_status") != "invalid"]
+    valid = [r for r in rows if r.get("validation_status") == "accepted"]
     mapping = assign_splits([r["video_id"] for r in valid], settings.split_ratios)
     for row in valid:
         split = mapping[row["video_id"]]
@@ -109,12 +116,15 @@ def write_splits(settings: Settings, rows: list[dict]) -> dict[str, int]:
 
 
 def scan(settings: Settings | None = None, force: bool = False) -> list[dict]:
+    from src.dataset.migrate_metadata import ensure_schema
+
     settings = settings or get_settings()
     paths = settings.paths
     if not paths.videos_csv.exists():
         create_dataset(settings)
+    ensure_schema(settings)
 
-    existing = {r["filepath"]: r for r in read_csv(paths.videos_csv) if r.get("filepath")}
+    existing = {r["filepath"]: normalize_video_row(r) for r in read_csv(paths.videos_csv) if r.get("filepath")}
     sources = {r["filename"]: r for r in read_csv(paths.sources_csv) if r.get("filename")}
     files, others = list_video_files(settings)
     for other in others:
@@ -140,12 +150,8 @@ def scan(settings: Settings | None = None, force: bool = False) -> list[dict]:
                      and str(old.get("file_mtime")) == str(int(stat.st_mtime)))
         if unchanged:
             row = dict(old)
-            # Lỗi cấp dataset (mất file / trùng lặp) được tính lại ở mỗi lần quét;
-            # lỗi do chính file (không đọc được) thì giữ nguyên vì file không đổi.
-            notes = row.get("notes", "")
-            if row.get("processing_status") == "invalid" and (
-                    notes.startswith("file không tồn tại") or notes.startswith("trùng lặp")):
-                row["processing_status"], row["notes"] = "pending", ""
+            if row.get("notes", "").startswith("file không tồn tại"):
+                row["notes"] = ""
             logger.info("[%d/%d] %s: không đổi, giữ metadata", index, len(files), path.name)
         else:
             row = {"video_id": old["video_id"] if old else f"{settings.video_id_prefix}{next_id:03d}"}
@@ -154,32 +160,18 @@ def scan(settings: Settings | None = None, force: bool = False) -> list[dict]:
             logger.info("[%d/%d] %s: đo metadata + sha256 ...", index, len(files), path.name)
             _measure(path, rel, row)
         src = sources.get(path.name, {})
-        for key in ("title", "source", "license", "category", "series"):
+        for key in ("title", "source", "source_url", "license", "category", "series"):
             row[key] = src.get(key, "") or row.get(key, "")
         rows.append(row)
         flush()
 
-    # File đã đăng ký nhưng không còn trên đĩa: giữ dòng, đánh dấu invalid (không xóa âm thầm).
+    # File đã đăng ký nhưng không còn trên đĩa: giữ dòng (không xóa âm thầm); validator -> rejected.
     for rel, old in existing.items():
         if rel not in seen:
             row = dict(old)
-            row["processing_status"] = "invalid"
             row["notes"] = "file không tồn tại tại filepath (bị xóa/di chuyển?)"
             rows.append(row)
             logger.warning("%s: %s", row.get("video_id"), row["notes"])
-
-    # Trùng nội dung: giữ bản có video_id nhỏ nhất.
-    by_hash: dict[str, str] = {}
-    for row in sorted(rows, key=lambda r: r["video_id"]):
-        digest = row.get("sha256")
-        if not digest or row.get("processing_status") == "invalid":
-            continue
-        if digest in by_hash:
-            row["processing_status"] = "invalid"
-            row["notes"] = f"trùng lặp nội dung với {by_hash[digest]}"
-            logger.warning("%s (%s): %s", row["video_id"], row["filename"], row["notes"])
-        else:
-            by_hash[digest] = row["video_id"]
 
     rows.sort(key=lambda r: r["video_id"])
     write_csv(paths.videos_csv, VIDEO_COLUMNS, rows)
@@ -192,8 +184,18 @@ def scan(settings: Settings | None = None, force: bool = False) -> list[dict]:
     return rows
 
 
+def write_source_info(settings: Settings, filename: str, info: dict) -> Path:
+    """Lưu metadata gốc từ nguồn (tiêu đề, mô tả, tags, kênh…) làm căn cứ xác minh."""
+    path = settings.paths.source_info / f"{filename}.json"
+    atomic_json(path, info)
+    return path
+
+
 def register_source(settings: Settings, filename: str, **fields) -> dict:
-    """Thêm/cập nhật một dòng sources.csv (thay cho việc sửa CSV bằng tay)."""
+    """Thêm/cập nhật một dòng sources.csv (thay cho việc sửa CSV bằng tay).
+
+    Đây là KHAI BÁO nguồn, không phải xác minh: ``license_verified`` mặc định "no".
+    """
     paths = settings.paths
     if not paths.sources_csv.exists():
         create_dataset(settings)
@@ -203,6 +205,7 @@ def register_source(settings: Settings, filename: str, **fields) -> dict:
     row = rows.get(filename, {"filename": filename})
     row.update({k: v for k, v in fields.items() if v is not None})
     row.setdefault("retrieved_at", _now())
+    row.setdefault("license_verified", "no")
     rows[filename] = row
     write_csv(paths.sources_csv, SOURCE_COLUMNS, sorted(rows.values(), key=lambda r: r["filename"]))
     return row
@@ -263,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--author", default=None)
     parser.add_argument("--license-url", default=None)
     parser.add_argument("--notes", default=None)
+    parser.add_argument("--description", default=None,
+                        help="Mô tả gốc của video (lưu vào metadata/source_info/, dùng làm căn cứ xác minh)")
+    parser.add_argument("--channel", default=None, help="Kênh / đơn vị phát hành")
     parser.add_argument("--category", default=None, help="music_video")
     parser.add_argument("--series", default=None, help="tùy chọn: album / dự án / nghệ sĩ")
     parser.add_argument("--remove", metavar="VIDEO_ID", action="append", default=[],
@@ -287,8 +293,13 @@ def main(argv: list[str] | None = None) -> int:
         row = register_source(settings, args.register_source, source=args.source or "user",
                               license=args.license, source_url=args.source_url, title=args.title,
                               author=args.author, license_url=args.license_url, notes=args.notes,
-                              category=args.category, series=args.series, license_verified="yes")
-        logger.info("Đã khai báo nguồn: %s", row)
+                              category=args.category, series=args.series, license_verified="no")
+        info = {k: v for k, v in {"title": args.title, "description": args.description,
+                                  "channel": args.channel or args.author, "license": args.license,
+                                  "webpage_url": args.source_url}.items() if v}
+        if info:
+            write_source_info(settings, args.register_source, info)
+        logger.info("Đã khai báo nguồn (CHƯA xác minh – duyệt bằng review_video): %s", row)
     scan(settings, force=args.force)
     return 0
 
